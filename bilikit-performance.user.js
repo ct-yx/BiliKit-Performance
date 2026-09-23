@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.6.0
+// @version      0.6.2
 // @author       shiinayane
 // @description  B 站性能优化：优化信息流图片 CDN、加载调度和布局稳定性，同时保留原生预览行为。
 // @license      MIT
@@ -2125,7 +2125,7 @@
       }
     })();
   }
-  const VERSION = "0.5.56";
+  const VERSION = "0.6.2";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -2199,7 +2199,7 @@
   let detailEl = null;
   let footEl = null;
   const STYLE = `
-:host { all: initial; }
+:host { all: initial; color-scheme: dark; }
 * { box-sizing: border-box; font-family: -apple-system, "PingFang SC", sans-serif; }
 
 .gear {
@@ -2529,7 +2529,7 @@
       }
     }
     navEl.appendChild(el("div", "nav-cat", ABOUT_CAT));
-    navEl.appendChild(navItemSpecial(ABOUT_ID, "关于 BiliKit"));
+    navEl.appendChild(navItemSpecial(ABOUT_ID, "关于 BiliKit Performance"));
   }
   function renderFeedDetail(d) {
     const loggedIn = !!get("feed.accessKey", "");
@@ -2638,13 +2638,13 @@
     d.appendChild(fields);
   }
   function renderAboutDetail(d) {
-    d.appendChild(el("div", "detail-title", "关于 BiliKit"));
-    d.appendChild(el("div", "detail-desc", "B 站体验增强套件 · Safari 友好、无需扩展、零外部依赖 · 作者 shiinayane · MIT"));
+    d.appendChild(el("div", "detail-title", "关于 BiliKit Performance"));
+    d.appendChild(el("div", "detail-desc", "面向 B 站首页、搜索与播放场景的 Edge / Chromium 性能优化脚本 · 作者 shiinayane · MIT"));
     const fields = el("div", "fields");
     const vrow = el("div", "field row");
     vrow.appendChild(el("span", "flabel", "版本"));
     const pill = el("span", "status on");
-    pill.innerHTML = `<span class="dot"></span>Core v${VERSION}`;
+    pill.innerHTML = `<span class="dot"></span>Performance v${VERSION}`;
     vrow.appendChild(pill);
     fields.appendChild(vrow);
     const feedAlive = Date.now() - Number(localStorage.getItem("bilikit:alive.feed") || 0) < 15e3;
@@ -2656,9 +2656,9 @@
     frow.appendChild(fpill);
     fields.appendChild(frow);
     fields.appendChild(callout(
-      '<a href="https://github.com/shiinayane/BiliKit" target="_blank" rel="noopener">GitHub 仓库</a> · <a href="https://github.com/shiinayane/BiliKit/issues" target="_blank" rel="noopener">反馈 / 报 Bug</a> · <a href="https://greasyfork.org/zh-CN/scripts/585248-bilikit-core" target="_blank" rel="noopener">GreasyFork 主页</a>'
+      '<a href="https://github.com/ct-yx/BiliKit-Performance" target="_blank" rel="noopener">GitHub 仓库</a> · <a href="https://github.com/ct-yx/BiliKit-Performance/issues" target="_blank" rel="noopener">反馈 / 报 Bug</a> · <a href="https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js" target="_blank" rel="noopener">安装 / 更新脚本</a>'
     ));
-    fields.appendChild(callout("<b>开发期 · 快速迭代中</b>：功能可能随时调整，偶有不稳定属正常；B 站接口一变也可能短暂失效。欢迎提 Issue 或建议。", "warn"));
+    fields.appendChild(callout("<b>升级说明</b>：Performance 是独立脚本身份，旧版 BiliKit Core 不会自动升级；请先停用旧版，再安装新版，避免两个版本同时运行。"));
     d.appendChild(fields);
   }
   function renderDetail() {
@@ -2720,12 +2720,13 @@
     const sr = root2.attachShadow({ mode: "open" });
     sr.innerHTML = `<style>${STYLE}</style>`;
     const gear = el("div", "gear");
-    gear.title = "BiliKit 设置";
+    gear.title = "BiliKit Performance 设置";
+    gear.setAttribute("aria-label", "BiliKit Performance 设置");
     gear.innerHTML = GEAR_SVG;
     const overlay = el("div", "overlay");
     const card = el("div", "card");
     const head = el("div", "head");
-    head.innerHTML = `<span class="title"><span class="brand">BiliKit</span> 设置</span>`;
+    head.innerHTML = `<span class="title"><span class="brand">BiliKit</span> Performance 设置</span>`;
     const close = el("span", "close", "×");
     head.appendChild(close);
     const main = el("div", "main");
@@ -2767,8 +2768,8 @@
         if (!fab.querySelector(".bk-settings")) {
           const b = document.createElement("button");
           b.className = "bk-settings";
-          b.title = "BiliKit 设置";
-          b.setAttribute("aria-label", "BiliKit 设置");
+          b.title = "BiliKit Performance 设置";
+          b.setAttribute("aria-label", "BiliKit Performance 设置");
           b.innerHTML = FAB_GEAR;
           b.addEventListener("click", open);
           fab.insertBefore(b, fab.querySelector(".bk-refresh"));
@@ -7080,7 +7081,7 @@
       if (root instanceof HTMLImageElement) watch(root);
       root.querySelectorAll?.("img").forEach(watch);
     };
-    const promote = (img) => {
+    const promote = (img, bounds) => {
       if (!(img instanceof HTMLImageElement)) return false;
       const source = img.currentSrc || img.src || img.getAttribute("src") || "";
       if (promoted.get(img) === source) return true;
@@ -7095,8 +7096,10 @@
       if (needsLoad && preloadWindowCount >= HOME_FEED_PRELOAD_BATCH) return false;
       promoted.set(img, source);
       try {
-        img.fetchPriority = "high";
-        stats.highPriorityImages += 1;
+        const inViewport = bounds.bottom > 0 && bounds.top < window.innerHeight
+          && bounds.right > 0 && bounds.left < window.innerWidth;
+        img.fetchPriority = inViewport ? "high" : "auto";
+        if (inViewport) stats.highPriorityImages += 1;
       } catch {
       }
       if (needsLoad) {
@@ -7123,7 +7126,7 @@
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           const img = entry.target;
-          if (promote(img)) observer.unobserve(img);
+          if (promote(img, entry.boundingClientRect)) observer.unobserve(img);
         }
       }, { rootMargin: `0px 0px ${distance}px 0px` });
       return true;

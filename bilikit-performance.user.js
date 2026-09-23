@@ -1,24 +1,96 @@
 // ==UserScript==
-// @name         BiliKit Core (Edge/Chromium)
-// @namespace    https://github.com/shiinayane/BiliKit
-// @version      0.5.36
+// @name         BiliKit Performance (Edge/Chromium)
+// @namespace    https://github.com/ct-yx/BiliKit-Performance
+// @version      0.6.0
 // @author       shiinayane
-// @description  B 站体验增强核心：针对 Edge/Chromium 优化 CDN 改写与卡顿自适应 · 免登录看评论/动态/1080p · 主题跟随系统深浅 · 评论显性别/IP 属地 · 播放不息屏。
+// @description  B 站性能优化：优化信息流图片 CDN、加载调度和布局稳定性，同时保留原生预览行为。
 // @license      MIT
+// @homepage     https://github.com/ct-yx/BiliKit-Performance
+// @supportURL   https://github.com/ct-yx/BiliKit-Performance/issues
+// @updateURL    https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js
+// @downloadURL  https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js
 // @icon         data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20512%20512%22%3E%3Crect%20width%3D%22512%22%20height%3D%22512%22%20rx%3D%22116%22%20fill%3D%22%23FB7299%22%2F%3E%3Cg%20stroke%3D%22%23fff%22%20stroke-width%3D%2226%22%20stroke-linecap%3D%22round%22%3E%3Cline%20x1%3D%22212%22%20y1%3D%22182%22%20x2%3D%22166%22%20y2%3D%22104%22%2F%3E%3Cline%20x1%3D%22300%22%20y1%3D%22182%22%20x2%3D%22346%22%20y2%3D%22104%22%2F%3E%3C%2Fg%3E%3Crect%20x%3D%22108%22%20y%3D%22176%22%20width%3D%22296%22%20height%3D%22236%22%20rx%3D%2254%22%20fill%3D%22%23fff%22%2F%3E%3Cpath%20d%3D%22M234%20258%20302%20294%20234%20330Z%22%20fill%3D%22%2300AEEC%22%20stroke%3D%22%2300AEEC%22%20stroke-width%3D%2218%22%20stroke-linejoin%3D%22round%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E
 // @match        *://*.bilibili.com/*
 // @match        *://bilibili.com/*
-// @grant        none
+// @grant        window.focus
+// @sandbox      raw
 // @run-at       document-start
 // ==/UserScript==
 
 (function () {
   'use strict';
 
+  if (window.__BILIKIT_PERFORMANCE_RUNTIME__?.installed) return;
+
   const KEY = "bilikit:settings";
   const CK = "bilikit_settings";
   const SENSITIVE = /accessKey|token|secret|passwd|password/i;
   const SETTINGS_EVENT = "bilikit:settings-changed";
+  const EARLY_HOME_PRECONNECT_ORIGINS = [
+    "https://s1.hdslb.com",
+    "https://api.bilibili.com",
+    "https://i0.hdslb.com",
+    "https://i1.hdslb.com",
+    "https://i2.hdslb.com",
+    "https://api.vc.bilibili.com"
+  ];
+  // 这两个匹配器放在文件前部，保证 document-start 能在首页脚本捕获 fetch 之前安装调度器。
+  const HOME_FEED_API_RE = /\/x\/web-interface\/wbi\/index\/top\/feed\/rcmd(?:[/?#]|$)/i;
+  const HOME_AUX_API_RE = /(?:\/x\/web-interface\/index\/ogv\/rcmd|\/xlive\/web-interface\/v1\/webMain\/getMoreRecList|\/pugv\/app\/web\/floor\/switch|\/twirp\/comic\.v1\.MainStation\/Feed|\/link_setting\/v1\/link_setting\/get|\/x\/im\/web\/msgfeed\/unread|\/session_svr\/v1\/session_svr\/single_unread|\/x\/web-interface\/wbi\/search\/default|\/x\/web-show\/(?:wbi\/)?res\/locs|\/x\/vip\/ads\/materials|\/x\/kv-frontend\/namespace\/data)/i;
+  const MEDIA_PLAYURL_API_RE = /\/(?:x\/player\/(?:wbi\/)?playurl|pgc\/player\/(?:web\/)?(?:v2\/)?playurl|pugv\/player\/web\/playurl)(?:[/?#]|$)/i;
+  function isBilibiliDocument() {
+    return /(?:^|\.)bilibili\.com$/i.test(location.hostname);
+  }
+  function isHomeDocument() {
+    return (location.hostname === "www.bilibili.com" || location.hostname === "bilibili.com") && (location.pathname === "/" || location.pathname === "/index.html");
+  }
+  function isSearchDocument() {
+    return location.hostname === "search.bilibili.com" && /^\/all(?:\/|$)/i.test(location.pathname);
+  }
+  function installEarlyHomePreconnect() {
+    const home = isHomeDocument();
+    const search = isSearchDocument();
+    if (!home && !search || window.__BILIKIT_EARLY_PRECONNECT__) return;
+    window.__BILIKIT_EARLY_PRECONNECT__ = true;
+    const origins = home ? EARLY_HOME_PRECONNECT_ORIGINS : [
+      "https://api.bilibili.com",
+      "https://i0.hdslb.com",
+      "https://i1.hdslb.com",
+      "https://i2.hdslb.com"
+    ];
+    let headObserver = null;
+    const attach = () => {
+      const root = document.head;
+      if (!root) {
+        if (!headObserver && document.documentElement && typeof MutationObserver === "function") {
+          headObserver = getRuntimeCoordinator().createObserver(() => {
+            if (document.head) {
+              headObserver.disconnect();
+              headObserver = null;
+              attach();
+            }
+          });
+          headObserver.observe(document.documentElement, { childList: true });
+        }
+        document.addEventListener("readystatechange", attach, { once: true });
+        return;
+      }
+      const existing = new Set([...document.querySelectorAll('link[rel~="preconnect"][href]')].map((link) => link.href.replace(/\/+$/, "")));
+      for (const href of origins) {
+        if (existing.has(href)) continue;
+        const link = document.createElement("link");
+        link.rel = "preconnect";
+        link.href = href;
+        link.crossOrigin = "anonymous";
+        root.appendChild(link);
+        existing.add(href);
+      }
+    };
+    attach();
+  }
+  installEarlyHomePreconnect();
+  // 请求优先级必须早于 B 站首页 bundle；函数声明会提升，匹配器已在上方初始化。
+  if (isBilibiliDocument()) installHomeFeedRequestPriority();
   function readLocal() {
     try {
       return JSON.parse(localStorage.getItem(KEY) || "{}") ?? {};
@@ -2053,7 +2125,12 @@
       }
     })();
   }
-  const VERSION = "0.5.36";
+  const VERSION = "0.5.56";
+  try {
+    window.__BILIKIT_VERSION__ = VERSION;
+    window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
+  } catch {
+  }
   const DEFAULT_OPEN_MODE = "newtab";
   const NEW_TAB_HISTORY_FLATTEN_KEY = "feed.newTabHistoryFlatten";
   const DEFAULT_NEW_TAB_HISTORY_FLATTEN = false;
@@ -2703,7 +2780,16 @@
     };
     syncFab();
     try {
-      new MutationObserver(syncFab).observe(document.body, { childList: true });
+      let syncPending = false;
+      const scheduleFabSync = () => {
+        if (syncPending) return;
+        syncPending = true;
+        requestAnimationFrame(() => {
+          syncPending = false;
+          syncFab();
+        });
+      };
+      new MutationObserver(scheduleFabSync).observe(document.body, { childList: true });
     } catch {
     }
   }
@@ -2719,9 +2805,61 @@
   const MEDIA_PATH_RE = /(?:^|\/)(?:upgcxcode|v1\/resource)\//i;
   const MEDIA_FILE_RE = /\.(?:m4s|mp4|flv|m3u8)(?:$|[?#])/i;
   const CDN_BODY_SIGNAL_RE = /bilivideo|acgvideo|akamaized\.net|szbdyd\.com|\/upgcxcode\/|\/v1\/resource\//i;
+  const EDGE_MCDN_HOST_RE = /(?:^|\.)edge\.mountaintoys\.cn$/i;
   const DEFAULT_CDN_TARGET = "upos-sz-mirrorhw.bilivideo.com";
+  // 境外出口优先使用当前可解析的海外阿里节点；不把国内节点策略硬套到境外。
+  const DEFAULT_FOREIGN_CDN_TARGET = "upos-sz-mirroraliov.bilivideo.com";
   const LEGACY_DEFAULT_CDN_TARGET = "upos-sz-mirrorhwb.bilivideo.com";
   const ADAPTIVE_FORCE_TTL = 10 * 60 * 1e3;
+  const CDN_REGION_CACHE_KEY = "bilikit:cdn-region:v2";
+  const CDN_REGION_CACHE_TTL = 10 * 60 * 1e3;
+  const NAV_PATH_RE = /\/x\/web-interface\/nav(?:[/?#]|$)/i;
+  function normalizeRegionCode(value) {
+    return String(value || "").trim().toUpperCase().replace(/^['\"]|['\"]$/g, "");
+  }
+  function classifyCdnRegion(ipRegion, legalRegion) {
+    const code = normalizeRegionCode(ipRegion) || normalizeRegionCode(legalRegion);
+    if (!code || /^(?:UNKNOWN|UN|N\/A|NULL|0|-)$/.test(code)) return "unknown";
+    // 只把中国大陆代码视为 domestic；HK/TW/MO 或其它国家/地区均走 foreign。
+    return /^(?:CN|CHN)$/.test(code) ? "domestic" : "foreign";
+  }
+  function isNavUrl(value) {
+    try {
+      return NAV_PATH_RE.test(new URL(value, location.href).pathname);
+    } catch {
+      return false;
+    }
+  }
+  function readStorageJson(storage, key) {
+    try {
+      return JSON.parse(storage.getItem(key) || "null");
+    } catch {
+      return null;
+    }
+  }
+  function writeStorageJson(storage, key, value) {
+    try {
+      storage.setItem(key, JSON.stringify(value));
+    } catch {
+    }
+  }
+  function readCdnRegionCache() {
+    const now = Date.now();
+    // sessionStorage 优先保证当前标签页的实时结果；localStorage 让新标签页
+    // 不必再次等待 nav 接口和测速，短 TTL 足以覆盖网络切换后的重新探测。
+    for (const storage of [sessionStorage, localStorage]) {
+      const cached = readStorageJson(storage, CDN_REGION_CACHE_KEY);
+      if (!cached || now - Number(cached.at || 0) > CDN_REGION_CACHE_TTL) continue;
+      if (!["domestic", "foreign"].includes(cached.region)) continue;
+      return cached;
+    }
+    return null;
+  }
+  function writeCdnRegionCache(record) {
+    const value = { ...record, at: Date.now() };
+    writeStorageJson(sessionStorage, CDN_REGION_CACHE_KEY, value);
+    writeStorageJson(localStorage, CDN_REGION_CACHE_KEY, value);
+  }
   function normalizeCdnHost(value) {
     if (typeof value !== "string") return null;
     const host = value.trim().replace(/^https?:\/\//i, "").split(/[/?#]/, 1)[0].replace(/:\d+$/, "").toLowerCase();
@@ -2745,9 +2883,13 @@
   function isCdnHost(hostname) {
     const host = String(hostname || "").toLowerCase();
     if (CDN_SUFFIXES.some((s) => host.endsWith(`.${s}`))) return true;
-    if (host.endsWith(".akamaized.net") || host.endsWith(".szbdyd.com") || host === "edge.mountaintoys.cn") return true;
+    if (host.endsWith(".akamaized.net") || host.endsWith(".szbdyd.com") || EDGE_MCDN_HOST_RE.test(host)) return true;
     if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(host)) return true;
     return /\.mcdn\.bilivideo\.(?:com|cn|net)$/.test(host);
+  }
+  function isMcdnProxyHost(hostname) {
+    const host = String(hostname || "").toLowerCase();
+    return EDGE_MCDN_HOST_RE.test(host) || /\.mcdn\.bilivideo\.(?:com|cn|net)$/.test(host);
   }
   function isMediaUrl(value) {
     const u = parseCdnUrl(value);
@@ -2759,12 +2901,16 @@
     const host = u.hostname.toLowerCase();
     if (host === targetHost) return false;
     // MCDN 的 :8000/:8082/:4483/:9102 端口和签名路径有专用代理规则，不能直接替换 Host。
-    if (/\.mcdn\.bilivideo\.(?:com|cn|net)$/.test(host)) return false;
+    // edge.mountaintoys.cn 这类带 os=mcdn/mcdnid 的地址也属于同一代理族。
+    if (isMcdnProxyHost(host)) return false;
     if (mode === "force") return true;
-    if (host.endsWith(".akamaized.net") || host.endsWith(".szbdyd.com") || host === "edge.mountaintoys.cn") return true;
+    if (host.endsWith(".akamaized.net") || host.endsWith(".szbdyd.com")) return true;
     if (/^upos-(?:sz|hz)-mirror[^.]+ov\.bilivideo\./.test(host)) return true;
     if (/^upos-(?:sz|hz)-mirror[^.]+bstar1\.bilivideo\./.test(host) || host === "upos-bstar1-mirrorakam.akamaized.net") return true;
     if (/^cn-hk-eq-\d{2}-\d{2}\.bilivideo\./.test(host)) return true;
+    // B 站现在常把直连地址下发为 cn-*/hk-*/... 动态边缘主机；这些同样属于
+    // 可替换的 bilivideo 直连节点，否则 smart 模式会出现 rewriteCount=0。
+    if (CDN_SUFFIXES.some((suffix) => host.endsWith(`.${suffix}`))) return true;
     return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host);
   }
   function swapHost(value, host) {
@@ -2775,17 +2921,30 @@
   function uniqueStrings(values) {
     return [...new Set(values.filter((value) => typeof value === "string" && value))];
   }
+  function isDirectCdnMediaUrl(value) {
+    const u = parseCdnUrl(value);
+    return !!u && isMediaUrl(value) && !isMcdnProxyHost(u.hostname);
+  }
   function fixEntry(e, targetHost, mode, stats) {
     if (!e || typeof e !== "object") return false;
     const primaryKey = ["baseUrl", "base_url", "url"].find((k) => typeof e[k] === "string");
-    if (!primaryKey || !shouldRewriteCdnUrl(e[primaryKey], mode, targetHost)) return false;
+    if (!primaryKey) return false;
     const originalPrimary = e[primaryKey];
-    const primary = swapHost(originalPrimary, targetHost);
-    if (primary === originalPrimary) return false;
+    const primaryUrl = parseCdnUrl(originalPrimary);
     const originalBackups = [];
     for (const key of ["backupUrl", "backup_url"]) {
       if (Array.isArray(e[key])) originalBackups.push(...e[key]);
     }
+    const mcdnPrimary = !!primaryUrl && isMcdnProxyHost(primaryUrl.hostname);
+    const directBackup = mcdnPrimary
+      ? originalBackups.find((url) => isDirectCdnMediaUrl(url)) || ""
+      : "";
+    if (!shouldRewriteCdnUrl(originalPrimary, mode, targetHost) && !directBackup) return false;
+    // MCDN/edge.mountaintoys.cn 的签名包含 os、mcdnid、upsig 等参数，不能只替换 Host。
+    // B 站通常已经在 backupUrl 中给出签名完整的 bilivideo 直连地址，直接提升它，
+    // 并把原代理地址保留在回退列表中。
+    const primary = directBackup || swapHost(originalPrimary, targetHost);
+    if (primary === originalPrimary) return false;
     const fallbacks = uniqueStrings([originalPrimary, ...originalBackups]).filter((url) => url !== primary);
     for (const key of ["baseUrl", "base_url", "url"]) {
       if (typeof e[key] === "string") e[key] = primary;
@@ -2795,8 +2954,9 @@
     }
     if (stats) {
       stats.rewriteCount += 1;
+      if (directBackup) stats.mcdnPromoteCount += 1;
       stats.lastSourceHost = parseCdnUrl(originalPrimary)?.hostname || "";
-      stats.lastTargetHost = targetHost;
+      stats.lastTargetHost = parseCdnUrl(primary)?.hostname || targetHost;
       stats.lastRewriteAt = Date.now();
     }
     return true;
@@ -2859,40 +3019,138 @@
   function init$5(cfg) {
     if (window.__BILIKIT_CDN_PICK__) return;
     window.__BILIKIT_CDN_PICK__ = true;
+    // 非播放页面仍可能消费首页/搜索页悬停预览的 playurl；只安装按 URL 精确匹配的
+    // fetch/XHR 响应钩子，不安装全局 JSON.parse，不扫描普通信息流 JSON。
+    const playbackPage = typeof isPlayPage === "function" && isPlayPage();
+    const mediaPage = isBilibiliDocument();
     const configuredHost = cfg.get("targetHost");
     const migratedHost = configuredHost === LEGACY_DEFAULT_CDN_TARGET ? DEFAULT_CDN_TARGET : configuredHost;
     if (configuredHost === LEGACY_DEFAULT_CDN_TARGET) setField("cdn-pick", "targetHost", DEFAULT_CDN_TARGET);
-    const TARGET_HOST = migratedHost === "" ? null : normalizeCdnHost(migratedHost || DEFAULT_CDN_TARGET);
+    const domesticTargetHost = migratedHost === "" ? null : normalizeCdnHost(migratedHost || DEFAULT_CDN_TARGET);
+    const foreignConfiguredHost = cfg.get("foreignTargetHost");
+    const foreignTargetHost = foreignConfiguredHost === "" ? null : normalizeCdnHost(foreignConfiguredHost || DEFAULT_FOREIGN_CDN_TARGET);
+    const regionPolicy = cfg.get("regionPolicy") || "auto";
     const requestedMode = cfg.get("mode") || "smart";
     const requestedAdaptive = cfg.get("adaptive") !== false;
     const isChromium = !!navigator.userAgentData || /(?:Edg|Chrome|Chromium)\//i.test(navigator.userAgent || "");
     const adaptiveKey = `bilikit:cdn-adaptive-force:${encodeURIComponent(location.pathname + location.search)}`;
     const adaptiveForced = isChromium && requestedAdaptive && readAdaptiveForce(adaptiveKey);
     const MODE = requestedMode === "force" || adaptiveForced ? "force" : "smart";
+    const cachedRegion = regionPolicy === "auto" ? readCdnRegionCache() : null;
     const stats = {
       browser: isChromium ? "chromium" : "other",
       mode: MODE,
       configuredMode: requestedMode,
       adaptive: requestedAdaptive,
       adaptiveForced,
-      targetHost: TARGET_HOST || "",
+      regionPolicy,
+      region: cachedRegion?.region || "unknown",
+      regionSource: cachedRegion ? "cache" : "pending",
+      ipRegion: cachedRegion?.ipRegion || "",
+      legalRegion: cachedRegion?.legalRegion || "",
+      regionReady: !!cachedRegion || regionPolicy !== "auto",
+      enabled: mediaPage,
+      reason: !mediaPage ? "non-bilibili-page" : cachedRegion || regionPolicy !== "auto" ? "" : "region-pending",
+      targetHost: "",
       rewriteCount: 0,
       lastSourceHost: "",
       lastTargetHost: "",
       lastSource: "",
-      lastRewriteAt: 0
+      lastRewriteAt: 0,
+      directRewriteCount: 0,
+      mcdnPromoteCount: 0
     };
     try {
       Object.defineProperty(window, "__BILIKIT_CDN_STATS__", { configurable: true, get: () => ({ ...stats }) });
     } catch {
     }
-    if (migratedHost !== "" && !TARGET_HOST) {
+    if (migratedHost !== "" && !domesticTargetHost || foreignConfiguredHost !== "" && !foreignTargetHost) {
       console.warn("[BiliKit] CDN 优选已禁用：自定义节点必须是 bilivideo/acgvideo 受信后缀下的纯主机名。");
       return;
     }
-    if (!TARGET_HOST) return;
+    const selectTargetHost = () => {
+      if (regionPolicy === "foreign") return foreignTargetHost;
+      if (regionPolicy === "domestic") return domesticTargetHost;
+      if (stats.region === "foreign") return foreignTargetHost;
+      if (stats.region === "domestic") return domesticTargetHost;
+      return null;
+    };
+    let activeTargetHost = selectTargetHost();
+    let navRequestStarted = false;
+    let regionProbeStarted = false;
+    stats.targetHost = activeTargetHost || "";
+    if (!activeTargetHost && regionPolicy !== "auto") {
+      stats.reason = "region-target-disabled";
+      return;
+    }
+    const observeRegion = (ipRegion, legalRegion, source) => {
+      const region = classifyCdnRegion(ipRegion, legalRegion);
+      if (region === "unknown") return false;
+      stats.region = region;
+      stats.regionSource = source;
+      stats.ipRegion = normalizeRegionCode(ipRegion);
+      stats.legalRegion = normalizeRegionCode(legalRegion);
+      stats.regionReady = true;
+      if (regionPolicy === "auto") {
+        activeTargetHost = selectTargetHost();
+        stats.targetHost = activeTargetHost || "";
+        stats.reason = activeTargetHost ? "" : "region-target-disabled";
+      }
+      writeCdnRegionCache({ region, ipRegion: stats.ipRegion, legalRegion: stats.legalRegion });
+      try {
+        window.dispatchEvent(new CustomEvent("bilikit:cdn-region", { detail: { region } }));
+      } catch {
+      }
+      return true;
+    };
+    const observeResponseRegion = (response, source) => {
+      if (!response || !response.headers) return false;
+      try {
+        // api.bilibili.com 通常是跨源 CORS 响应，未暴露的自定义头在 Chromium
+        // 中即使被 try/catch 包住也会在控制台产生 Refused to get unsafe header；
+        // 跨源场景直接走 nav JSON 的 ip_region 回退，同源响应才读响应头。
+        if (response.url && new URL(response.url, location.href).origin !== location.origin) return false;
+        return observeRegion(
+          response.headers.get("x-bili-metadata-ip-region"),
+          response.headers.get("x-bili-metadata-legal-region"),
+          source
+        );
+      } catch {
+        return false;
+      }
+    };
+    const observeXhrRegion = (xhr, source) => {
+      try {
+        if (xhr.responseURL && new URL(xhr.responseURL, location.href).origin !== location.origin) return false;
+        return observeRegion(
+          xhr.getResponseHeader("x-bili-metadata-ip-region"),
+          xhr.getResponseHeader("x-bili-metadata-legal-region"),
+          source
+        );
+      } catch {
+        return false;
+      }
+    };
+    const observeRegionBody = (payload, source) => {
+      let data = payload;
+      if (typeof data === "string") {
+        try {
+          data = parseJson(data);
+        } catch {
+          return false;
+        }
+      }
+      if (!data || typeof data !== "object") return false;
+      const body = data.data && typeof data.data === "object" ? data.data : data;
+      return observeRegion(
+        body.ip_region || body.ipRegion,
+        body.legal_region || body.legalRegion,
+        source
+      );
+    };
     const rewritePlayurl$1 = (root2, source) => {
-      const changed = rewritePlayurl(root2, TARGET_HOST, MODE, stats);
+      if (!activeTargetHost) return false;
+      const changed = rewritePlayurl(root2, activeTargetHost, MODE, stats);
       if (changed) stats.lastSource = source;
       return changed;
     };
@@ -2928,18 +3186,20 @@
         return response;
       }
     };
-    try {
-      const parseMark = "__bilikitCdnJsonPatched";
-      if (!window.JSON.parse[parseMark]) {
-        const patchedParse = function(text, reviver) {
-          const parsed = nativeJsonParse.call(this, text, reviver);
-          if (typeof text === "string" && CDN_BODY_SIGNAL_RE.test(text)) rewritePlayurl$1(parsed, "JSON.parse");
-          return parsed;
-        };
-        Object.defineProperty(patchedParse, parseMark, { configurable: true, value: true });
-        window.JSON.parse = patchedParse;
+    if (playbackPage) {
+      try {
+        const parseMark = "__bilikitCdnJsonPatched";
+        if (!window.JSON.parse[parseMark]) {
+          const patchedParse = function(text, reviver) {
+            const parsed = nativeJsonParse.call(this, text, reviver);
+            if (typeof text === "string" && CDN_BODY_SIGNAL_RE.test(text)) rewritePlayurl$1(parsed, "JSON.parse");
+            return parsed;
+          };
+          Object.defineProperty(patchedParse, parseMark, { configurable: true, value: true });
+          window.JSON.parse = patchedParse;
+        }
+      } catch {
       }
-    } catch {
     }
     const installGlobalHook = (name) => {
       try {
@@ -2964,13 +3224,25 @@
       } catch {
       }
     };
-    installGlobalHook("__playinfo__");
-    installGlobalHook("__INITIAL_STATE__");
+    if (playbackPage) {
+      installGlobalHook("__playinfo__");
+      installGlobalHook("__INITIAL_STATE__");
+    }
     const origFetch = window.fetch;
     if (origFetch) {
       window.fetch = async function(input, _init) {
         const url = typeof input === "string" ? input : input && input.url || String(input || "");
+        if (isNavUrl(url)) navRequestStarted = true;
         const resp = await origFetch.apply(this, arguments);
+        const regionSeen = observeResponseRegion(resp, `fetch:${url}`);
+        // 有些边缘响应不暴露地域响应头，但 nav JSON 仍带有 ip_region/legal_region；
+        // 只解析这一条轻量接口，不扫描首页/信息流的普通 JSON。
+        if (isNavUrl(url) && !regionSeen) {
+          void resp.clone().json().then((payload) => {
+            observeRegionBody(payload, `fetch-body:${url}`);
+          }).catch(() => {
+          });
+        }
         if (!isPlayurl(url)) return resp;
         try {
           const body = rewriteJsonText(await resp.clone().text(), `fetch:${url}`);
@@ -2985,6 +3257,26 @@
       class X extends OX {
         open(method, url, ...rest) {
           this.__cdnUrl = String(url);
+          if (isNavUrl(this.__cdnUrl)) navRequestStarted = true;
+          if (this.__bilikitRegionListener) {
+            try {
+              this.removeEventListener("readystatechange", this.__bilikitRegionListener);
+            } catch {
+            }
+          }
+          this.__bilikitRegionListener = () => {
+            if (this.readyState !== 4) return;
+            const source = `xhr:${this.__cdnUrl}`;
+            const regionSeen = observeXhrRegion(this, source);
+            if (isNavUrl(this.__cdnUrl) && !regionSeen) {
+              try {
+                const payload = this.responseType === "json" ? this.response : this.responseText;
+                observeRegionBody(payload, `xhr-body:${this.__cdnUrl}`);
+              } catch {
+              }
+            }
+          };
+          this.addEventListener("readystatechange", this.__bilikitRegionListener);
           return super.open(method, url, ...rest);
         }
         get responseText() {
@@ -3011,7 +3303,84 @@
       }
       window.XMLHttpRequest = X;
     }
-    if (isChromium && requestedAdaptive) {
+    const rewriteDirectMediaUrl = (value, source) => {
+      if (!activeTargetHost || typeof value !== "string") return value;
+      if (!shouldRewriteCdnUrl(value, MODE, activeTargetHost)) return value;
+      const next = swapHost(value, activeTargetHost);
+      if (next === value) return value;
+      stats.directRewriteCount += 1;
+      stats.lastSource = source;
+      stats.lastTargetHost = activeTargetHost;
+      try {
+        stats.lastSourceHost = new URL(value, location.href).hostname;
+      } catch {
+      }
+      stats.lastRewriteAt = Date.now();
+      return next;
+    };
+    const patchMediaSource = (Ctor) => {
+      if (!Ctor || !Ctor.prototype) return;
+      const proto = Ctor.prototype;
+      const mark = "__bilikitCdnMediaPatched";
+      if (proto[mark]) return;
+      try {
+        const src = Object.getOwnPropertyDescriptor(proto, "src");
+        if (src && typeof src.set === "function" && src.configurable !== false) {
+          Object.defineProperty(proto, "src", {
+            ...src,
+            set(value) {
+              src.set.call(this, rewriteDirectMediaUrl(String(value), `${Ctor.name}.src`));
+            }
+          });
+        }
+        const nativeSetAttribute = proto.setAttribute;
+        if (typeof nativeSetAttribute === "function") {
+          proto.setAttribute = function(name, value) {
+            const key = String(name).toLowerCase();
+            return nativeSetAttribute.call(this, name, key === "src" ? rewriteDirectMediaUrl(String(value), `${Ctor.name}.setAttribute`) : value);
+          };
+        }
+        Object.defineProperty(proto, mark, { configurable: true, value: true });
+      } catch {
+      }
+    };
+    patchMediaSource(window.HTMLMediaElement);
+    patchMediaSource(window.HTMLSourceElement);
+    if (regionPolicy === "auto" && !stats.regionReady && origFetch) {
+      // 优先复用页面自己的 nav/XHR 响应。若页面尚未发起 nav，再发一次轻量探测，
+      // 并用标记避免「页面 nav + BiliKit nav」在同一时刻重复探测。
+      const probeRegion = () => {
+        if (stats.regionReady || navRequestStarted || regionProbeStarted) return;
+        regionProbeStarted = true;
+        const controller = typeof AbortController === "function" ? new AbortController() : null;
+        const timer = setTimeout(() => {
+          try {
+            controller == null ? void 0 : controller.abort();
+          } catch {
+          }
+        }, 1200);
+        origFetch.call(window, "https://api.bilibili.com/x/web-interface/nav", {
+          credentials: "include",
+          cache: "no-store",
+          signal: controller == null ? void 0 : controller.signal
+        }).then((response) => {
+          const regionSeen = observeResponseRegion(response, "region-probe");
+          const body = isNavUrl("https://api.bilibili.com/x/web-interface/nav") && !regionSeen
+            ? response.clone().json().then((payload) => observeRegionBody(payload, "region-probe-body")).catch(() => false)
+            : Promise.resolve(false);
+          return body.then(() => {
+            try {
+              response.body == null ? void 0 : response.body.cancel();
+            } catch {
+            }
+          });
+        }).catch(() => {
+        }).finally(() => clearTimeout(timer));
+      };
+      setTimeout(probeRegion, 240);
+      setTimeout(probeRegion, 900);
+    }
+    if (playbackPage && isChromium && requestedAdaptive) {
       let issues = [];
       let lastIssueAt = 0;
       let reloadScheduled = false;
@@ -3061,11 +3430,23 @@
   const cdnPick = {
     id: "cdn-pick",
     name: "CDN 优选",
-    description: "Edge/Chromium 优先改写疑似海外慢节点，同时保留 B 站原始回退地址",
+    description: "Edge/Chromium 按 B 站返回的出口地域选择国内/境外节点，同时保留原始回退地址",
     category: "播放",
     runAt: "start",
-    note: "Edge/Chromium 会同时处理 fetch、XHR、JSON.parse、__playinfo__ 和 __INITIAL_STATE__。智能模式只改写 Akamai、AWS/海外镜像、BStar、香港 Equinix、PCDN/IP 等可直接替换的疑似慢地址；MCDN 因需要专用端口和代理封装会保留原地址。强制模式也不会直接破坏 MCDN。原始主地址会保留为备用地址，连续卡顿时最多自动切换一次强制模式并刷新。<br>可在控制台查看 <code>window.__BILIKIT_CDN_STATS__</code> 确认实际改写次数。",
+    note: "播放页、首页和搜索页按 B 站返回的 IP 地域改写可替换的 bilivideo 直连地址，覆盖正式播放和悬停预览 playurl；首页/搜索/动态等 bfs 图片按 i0/i1/i2 实测节点改写。不扫描普通 JSON，不改变预览内容、清晰度或交互。自动模式读取 B 站接口的 IP 地域响应头或 nav JSON：CN/CHN 使用国内节点，HK/TW/MO 及其它代码使用境外节点，地域未确认前保留原生地址。MCDN 主地址不伪造签名；若 B 站同时下发签名完整的 bilivideo 直连备用地址，则优先使用直连，并保留 MCDN 回退。<br>可在控制台查看 <code>window.__BILIKIT_CDN_STATS__</code>、<code>window.__BILIKIT_HOME_FEED_STATS__</code> 和 <code>window.__BILIKIT_HOME_IMAGE_STATS__</code>。",
     settings: [
+      {
+        key: "regionPolicy",
+        type: "select",
+        label: "IP 地区策略",
+        default: "auto",
+        options: [
+          { label: "自动检测（推荐）", value: "auto" },
+          { label: "强制按国内出口", value: "domestic" },
+          { label: "强制按境外出口", value: "foreign" }
+        ],
+        hint: "自动读取 x-bili-metadata-ip-region，响应头不可见时读取 nav JSON 的 ip_region；CN/CHN 走国内，其他已知代码走境外，未知时保持原生 CDN"
+      },
       {
         key: "mode",
         type: "select",
@@ -3075,7 +3456,7 @@
           { label: "智能（推荐）", value: "smart" },
           { label: "强制改写所有 CDN", value: "force" }
         ],
-        hint: "智能模式针对海外镜像、Akamai、PCDN/IP；MCDN 保持 B 站原始代理链路，如果仍卡顿可切换强制模式"
+        hint: "智能模式针对海外镜像、Akamai、PCDN/IP；MCDN 优先使用 B 站提供的签名直连备用并保留代理回退，如果仍卡顿可切换强制模式"
       },
       {
         key: "adaptive",
@@ -3113,6 +3494,19 @@
         allowCustom: true,
         customPlaceholder: "upos-sz-mirrorXXX.bilivideo.com",
         hint: "自定义节点必须是 bilivideo.com、bilivideo.cn、bilivideo.net 或 acgvideo 受信后缀下的主机名"
+      },
+      {
+        key: "foreignTargetHost",
+        type: "select",
+        label: "境外 CDN 镜像节点",
+        default: DEFAULT_FOREIGN_CDN_TARGET,
+        options: [
+          { label: "海外阿里 aliov（默认）", value: DEFAULT_FOREIGN_CDN_TARGET },
+          { label: "关闭境外改写", value: "" }
+        ],
+        allowCustom: true,
+        customPlaceholder: "upos-sz-mirrorXXX.bilivideo.com",
+        hint: "只在检测到非 CN 出口时使用；境外节点异常时可关闭，让 B 站自行分配"
       }
     ],
     init: init$5
@@ -3151,6 +3545,7 @@
       }
     }
     function syncComponentTheme(dark) {
+      if (isHomePage() || isSearchPage()) return;
       const want = dark ? "dark" : "light";
       for (const el2 of document.querySelectorAll("bili-comments")) {
         try {
@@ -3164,6 +3559,8 @@
       setCookie(COOKIE_NAME, dark ? "dark" : "light");
       swapThemeStylesheet(document, dark);
       const root2 = document.documentElement;
+      // document-start 时 HTML 根节点可能尚未创建；DOMContentLoaded 会再次调用 apply。
+      if (!root2) return;
       root2.classList.toggle("bili_dark", dark);
       root2.classList.toggle("night-mode", dark);
       root2.style.backgroundColor = rootBootstrapBackground(dark, document.readyState);
@@ -3191,6 +3588,8 @@
       });
     };
     function watchComments() {
+      // 首页和搜索页没有评论树；跳过轮询，避免在信息流加载期间持续查找不存在的 #commentapp。
+      if (isHomePage() || isSearchPage()) return;
       const app = document.querySelector("#commentapp");
       if (app) {
         new MutationObserver(scheduleComponentSync).observe(app, { childList: true, subtree: true });
@@ -3238,6 +3637,8 @@
     return `${PROFILE_ICON_BASE}gender_${sex === "男" ? "male" : "female"}.png@.avif`;
   }
   function init$3(cfg) {
+    // 首页和搜索页没有评论组件，不安装全树 MutationObserver，也不启动兜底定时器。
+    if (isHomePage() || isSearchPage()) return;
     if (window.__BILIKIT_COMMENT_LOC__) return;
     window.__BILIKIT_COMMENT_LOC__ = true;
     const PIN = cfg.get("pin") || "";
@@ -3433,6 +3834,8 @@
   }
   function init$2() {
     const nav = navigator;
+    // 搜索页的原生悬停预览不是正式播放；不要为它申请屏幕唤醒锁。
+    if (!isPlayPage()) return;
     if (!("wakeLock" in navigator)) return;
     if (window.__BILIKIT_WAKE_LOCK__) return;
     window.__BILIKIT_WAKE_LOCK__ = true;
@@ -3540,12 +3943,47 @@
   const urlOf = (input) => {
     if (typeof input === "string") return input;
     if (input && typeof input.url === "string") return input.url;
+    if (input && typeof input.href === "string") return input.href;
     try {
       return String(input);
     } catch {
       return "";
     }
   };
+  function fixSearchApiUrl(value) {
+    const url = urlOf(value);
+    if (!url.includes("/api.bilibili.comx/web-interface/search")) return "";
+    return url.replace(/\.com(?!\/)/i, ".com/");
+  }
+  function installSearchUrlFix() {
+    if (window.__BILIKIT_SEARCH_URL_FIX__) return;
+    window.__BILIKIT_SEARCH_URL_FIX__ = true;
+    const origFetch = window.fetch;
+    if (origFetch) {
+      window.fetch = function(input, init2) {
+        const fixed = fixSearchApiUrl(input);
+        if (!fixed) return origFetch.apply(this, arguments);
+        let realInput = fixed;
+        if (input instanceof Request) {
+          try {
+            realInput = new Request(fixed, input);
+          } catch {
+          }
+        }
+        return origFetch.call(this, realInput, init2);
+      };
+    }
+    const OX = window.XMLHttpRequest;
+    if (OX) {
+      class X extends OX {
+        open(method, url, ...rest) {
+          const fixed = fixSearchApiUrl(url);
+          return super.open(method, fixed || url, ...rest);
+        }
+      }
+      window.XMLHttpRequest = X;
+    }
+  }
   function requestToInit(req) {
     const headers = {};
     try {
@@ -3559,12 +3997,22 @@
   function installNetHook(rules) {
     if (window.__BILIKIT_NET_HOOK__) return;
     window.__BILIKIT_NET_HOOK__ = true;
+    // 同一个接口通常会被 fetch/XHR 反复访问；缓存规则判断，避免每次都遍历全部规则。
+    const ruleCache = new Map();
+    const findRule = (url) => {
+      const key = String(url || "").split("#", 1)[0];
+      if (ruleCache.has(key)) return ruleCache.get(key);
+      const rule = rules.find((r) => r.match(key));
+      if (ruleCache.size >= 128) ruleCache.clear();
+      ruleCache.set(key, rule || null);
+      return rule || null;
+    };
     const origFetch = window.fetch;
     if (origFetch) {
-      window.fetch = async function(input, init2) {
+      window.fetch = function(input, init2) {
         var _a;
         const url = urlOf(input);
-        const rule = rules.find((r) => r.match(url));
+        const rule = findRule(url);
         if (!rule) return origFetch.apply(this, arguments);
         let realInput = input;
         let realInit = init2;
@@ -3579,18 +4027,20 @@
             realInit = { ...base, ...rw.credentials ? { credentials: rw.credentials } : {} };
           }
         }
-        const resp = await origFetch.call(this, realInput, realInit);
-        if (!rule.rewriteResponse) return resp;
-        try {
-          const text = await resp.clone().text();
-          const out = rule.rewriteResponse(JSON.parse(text), url);
-          const headers = new Headers(resp.headers);
-          headers.delete("content-length");
-          headers.delete("content-encoding");
-          return new Response(JSON.stringify(out), { status: resp.status, statusText: resp.statusText, headers });
-        } catch {
-          return resp;
-        }
+        const response = origFetch.call(this, realInput, realInit);
+        if (!rule.rewriteResponse) return response;
+        return response.then(async (resp) => {
+          try {
+            const text = await resp.clone().text();
+            const out = rule.rewriteResponse(JSON.parse(text), url);
+            const headers = new Headers(resp.headers);
+            headers.delete("content-length");
+            headers.delete("content-encoding");
+            return new Response(JSON.stringify(out), { status: resp.status, statusText: resp.statusText, headers });
+          } catch {
+            return resp;
+          }
+        });
       };
     }
     const OX = window.XMLHttpRequest;
@@ -3611,7 +4061,7 @@
           this.__nlUrl = String(url);
           this.__nlOpenArgs = [method, url, ...rest];
           this.__nlHeaders = [];
-          this.__nlRule = rules.find((r) => r.match(this.__nlUrl));
+          this.__nlRule = findRule(this.__nlUrl);
           this.__nlRw = (_b = (_a = this.__nlRule) == null ? void 0 : _a.rewriteRequest) == null ? void 0 : _b.call(_a, this.__nlUrl);
           return super.open(method, ((_c = this.__nlRw) == null ? void 0 : _c.url) || url, ...rest);
         }
@@ -3945,6 +4395,14 @@
     if (window.__BILIKIT_NO_LOGIN__) return;
     if (window.top !== window.self && !location.hash.includes("bk-drawer")) return;
     if (location.hostname === "passport.bilibili.com") return;
+    const homePage = isHomePage();
+    const searchPage = isSearchPage();
+    if (homePage) {
+      // 首页信息流不需要免登录响应改写；保留 B 站原生 fetch/XHR，避免全量 hook
+      // 包住推荐接口和悬停预览请求。视频页、动态页仍按原逻辑提供免登录能力。
+      if (!loginCookieFingerprint(document.cookie)) clearFakeUid();
+      return;
+    }
     const fingerprint = loginCookieFingerprint(document.cookie);
     const authStorage = fingerprint ? getSessionStorage() : null;
     const authAction = fingerprint ? authStorage ? initialAuthAction(document.cookie, authStorage) : "skip" : "activate-guest";
@@ -3966,6 +4424,13 @@
     }
     if (needsRealLogin()) {
       clearFakeUid();
+      return;
+    }
+    if (searchPage) {
+      // 搜索结果只保留 B 站自身的接口地址修复；不伪造登录态、不改响应，
+      // 也不安装免登录完整规则，避免干扰搜索结果和原生悬停预览。
+      if (!fingerprint) clearFakeUid();
+      installSearchUrlFix();
       return;
     }
     window.__BILIKIT_NO_LOGIN__ = true;
@@ -4110,7 +4575,7 @@
       },
       // player/wbi/v2：改 login_mid / 等级 / 字幕字段 → 播放器 UI 认账（清晰度、字幕可选）
       {
-        match: (u) => u.includes("/x/player/wbi/v2"),
+        match: (u) => !searchPage && u.includes("/x/player/wbi/v2"),
         rewriteResponse: (j) => {
           try {
             const d = j == null ? void 0 : j.data;
@@ -4168,7 +4633,7 @@
       // 番剧/PGC（ogv/player/playview）：把 user_status.is_login 掰成 true → 播放器不再弹
       // 「登录后观看」、清晰度不锁最低。PGC 无需重签 playurl，is_login 即全部机制（beefreely 同）。
       {
-        match: (u) => u.includes("/ogv/player/playview"),
+        match: (u) => !searchPage && u.includes("/ogv/player/playview"),
         rewriteResponse: (j) => {
           var _a2;
           try {
@@ -4183,7 +4648,9 @@
       // 试看只给到 480p，qn=80 也被打回。故强行掰回桌面 DASH 路径：platform=pc + fnval=4048(全 DASH)
       // + fourk=1，让服务端按桌面策略放行 1080p 试看（桌面本就这套，零风险；iPad 靠 MSE 放 DASH）。
       {
-        match: (u) => u.includes("/x/player/wbi/playurl"),
+        // 搜索页的 playurl 属于 B 站原生悬停预览：保持原请求参数，避免
+        // 免登录模块把低清预览放大成 1080p/DASH。
+        match: (u) => !searchPage && u.includes("/x/player/wbi/playurl"),
         // 快路径：key 已缓存 → 同步签名，零延迟
         rewriteRequest: (u) => {
           try {
@@ -4477,6 +4944,12 @@
   }
   function isPlayPage(pathname = location.pathname) {
     return /^\/(video\/|bangumi\/play\/|cheese\/play\/|list\/|festival\/)/.test(pathname);
+  }
+  function isSearchPage(pathname = location.pathname, hostname = location.hostname) {
+    return hostname === "search.bilibili.com" || hostname === "www.bilibili.com" && /^\/search(?:\/|$)/.test(pathname);
+  }
+  function isHomePage(pathname = location.pathname, hostname = location.hostname) {
+    return (hostname === "www.bilibili.com" || hostname === "bilibili.com") && (pathname === "/" || pathname === "/index.html");
   }
   const TITLE_SUFFIX = /[_-](哔哩哔哩|bilibili|番剧|动画|电影|电视剧|纪录片|综艺|国创|在线观看|全集)([_-]?(哔哩哔哩|bilibili|番剧|动画|电影|电视剧|纪录片|综艺|国创|在线观看|全集))*$/i;
   function videoIdOf(href, base = "https://www.bilibili.com") {
@@ -5477,20 +5950,1201 @@
     if (historyOwned && historyActive) consumeDrawerHistory();
   }
   const PC_HOSTS = ["https://api.bilibili.com", "https://s1.hdslb.com", "https://i0.hdslb.com", "https://i1.hdslb.com", "https://i2.hdslb.com"];
+  const SEARCH_PRECONNECT_HOSTS = ["https://api.bilibili.com", "https://i0.hdslb.com", "https://i1.hdslb.com", "https://i2.hdslb.com"];
+  const HOME_PRECONNECT_HOSTS = ["https://s1.hdslb.com", "https://api.bilibili.com", "https://i0.hdslb.com", "https://api.vc.bilibili.com"];
+  // 信息流封面/横幅的优先级观察范围；CDN 改写本身会覆盖所有 i0/i1/i2 的 bfs 图片。
+  const BILI_MEDIA_IMAGE_RE = /^(?:https?:)?\/\/(?:i[0-2]\.)?hdslb\.com\/bfs\/(?:archive|banner|live|bangumi|feed-admin|sycp\/|upower\/|new_dyn\/|storyff\/)/i;
+  const BILI_CDN_IMAGE_RE = /^\/bfs\//i;
+  const HOME_IMAGE_HOSTS = ["i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com"];
+  const HOME_IMAGE_DEFAULT_HOST = "i0.hdslb.com";
+  const HOME_IMAGE_CACHE_KEY = "bilikit:home-image-cdn:v4";
+  const HOME_IMAGE_CACHE_FALLBACK_KEYS = [];
+  const HOME_IMAGE_CACHE_TTL = 15 * 60 * 1e3;
+  const HOME_FEED_PRELOAD_ROWS = 2;
+  const HOME_FEED_PRELOAD_MIN = 420;
+  const HOME_FEED_PRELOAD_MAX = 720;
+  const HOME_FEED_PRELOAD_BATCH = 10;
+  const HOME_FEED_LAYOUT_FIX_ATTR = "data-bk-feed-layout";
+  const HOME_FEED_LAYOUT_MARGIN_ATTR = "data-bk-feed-layout-margin";
   const PC_WINDOW = 12e3;
   let lastPc = -Infinity;
-  let pcLinks = [];
-  function preconnect() {
+  function getRuntimeCoordinator() {
+    const key = "__BILIKIT_PERFORMANCE_RUNTIME__";
+    const current = window[key];
+    if (current && !current.disposed) return current;
+    const cleanups = [];
+    const services = new Map();
+    const api = {
+      disposed: false,
+      installed: true,
+      addCleanup(cleanup) {
+        if (typeof cleanup !== "function") return () => {};
+        if (api.disposed) {
+          try { cleanup(); } catch {}
+          return () => {};
+        }
+        cleanups.push(cleanup);
+        return () => {
+          const index = cleanups.indexOf(cleanup);
+          if (index >= 0) cleanups.splice(index, 1);
+        };
+      },
+      listen(target, type, listener, options) {
+        target?.addEventListener?.(type, listener, options);
+        const untrack = api.addCleanup(() => target?.removeEventListener?.(type, listener, options));
+        return () => {
+          target?.removeEventListener?.(type, listener, options);
+          untrack();
+        };
+      },
+      createObserver(callback) {
+        if (typeof MutationObserver !== "function") return null;
+        const nativeObserver = new MutationObserver(callback);
+        const untrack = api.addCleanup(() => nativeObserver.disconnect());
+        return {
+          observe: (...args) => nativeObserver.observe(...args),
+          disconnect: () => nativeObserver.disconnect(),
+          disconnectAndForget: () => {
+            nativeObserver.disconnect();
+            untrack();
+          }
+        };
+      },
+      timeout(callback, delay) {
+        let active = true;
+        let untrack = () => {};
+        let timer = setTimeout(() => {
+          active = false;
+          untrack();
+          callback();
+        }, delay);
+        const cancel = () => {
+          if (!active) return;
+          active = false;
+          clearTimeout(timer);
+          timer = 0;
+          untrack();
+        };
+        untrack = api.addCleanup(cancel);
+        return { cancel };
+      },
+      frame(callback) {
+        let active = true;
+        let untrack = () => {};
+        const frame = requestAnimationFrame((time) => {
+          active = false;
+          untrack();
+          callback(time);
+        });
+        const cancel = () => {
+          if (!active) return;
+          active = false;
+          cancelAnimationFrame(frame);
+          untrack();
+        };
+        untrack = api.addCleanup(cancel);
+        return { cancel };
+      },
+      service(name, factory) {
+        if (services.has(name)) return services.get(name);
+        const service = factory(api);
+        services.set(name, service);
+        if (typeof service?.dispose === "function") api.addCleanup(() => service.dispose());
+        return service;
+      },
+      dispose() {
+        if (api.disposed) return;
+        api.disposed = true;
+        while (cleanups.length) {
+          try { cleanups.pop()(); } catch {}
+        }
+        services.clear();
+        try { delete window[key]; } catch {}
+      }
+    };
+    const onPageHide = (event) => {
+      if (!event.persisted) api.dispose();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    cleanups.push(() => window.removeEventListener("pagehide", onPageHide));
+    try {
+      Object.defineProperty(window, key, { configurable: true, value: api });
+    } catch {
+      window[key] = api;
+    }
+    return api;
+  }
+  function getHomeFeedCoordinator() {
+    if (!isHomeDocument()) return null;
+    const runtime = getRuntimeCoordinator();
+    return runtime.service("home-feed", (owner) => {
+      const subscribers = new Set();
+      const resources = new Set();
+      const pendingNodes = new Set();
+      const pendingResources = new Set();
+      const stats = { enabled: true, rootChanges: 0, mutationBatches: 0, addedNodes: 0, resourceChanges: 0, flushes: 0 };
+      let feedRoot = null;
+      let rootObserver = null;
+      let shellObserver = null;
+      let shellTargets = [];
+      let pending = false;
+      let pendingReason = "initialize";
+      let pendingRootChange = false;
+      let frameHandle = null;
+      const resourceElement = (node) => node instanceof HTMLImageElement || node instanceof HTMLSourceElement || node instanceof HTMLVideoElement;
+      const collect = (nodes) => {
+        for (const node of nodes) {
+          if (!node || node.nodeType !== 1) continue;
+          if (resourceElement(node)) resources.add(node);
+          node.querySelectorAll?.("img,source,video").forEach((item) => resources.add(item));
+        }
+      };
+      const syncRoot = () => {
+        const nextRoot = document.querySelector(".container.is-version8");
+        if (nextRoot === feedRoot) return;
+        rootObserver?.disconnectAndForget();
+        rootObserver = null;
+        feedRoot = nextRoot;
+        resources.clear();
+        stats.rootChanges += 1;
+        pendingRootChange = true;
+        pendingReason = "root-change";
+        if (feedRoot) {
+          rootObserver = owner.createObserver((mutations) => {
+            stats.mutationBatches += 1;
+            for (const mutation of mutations) {
+              for (const node of mutation.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                pendingNodes.add(node);
+                stats.addedNodes += 1;
+              }
+            }
+            for (const resource of resources) if (!feedRoot.contains(resource)) resources.delete(resource);
+            pendingReason = "child-list";
+            schedule();
+          });
+          rootObserver?.observe(feedRoot, { childList: true });
+          for (const child of feedRoot.children) pendingNodes.add(child);
+        }
+        syncShellObserver();
+        schedule();
+      };
+      const syncShellObserver = () => {
+        const currentRoot = document.querySelector(".container.is-version8");
+        const targets = [];
+        if (currentRoot) {
+          if (currentRoot.parentElement) targets.push(currentRoot.parentElement);
+        } else {
+          targets.push(document.querySelector("#app") || document.body || document.documentElement);
+        }
+        const uniqueTargets = [...new Set(targets.filter(Boolean))];
+        if (uniqueTargets.length === shellTargets.length && uniqueTargets.every((target, index) => target === shellTargets[index])) return;
+        shellObserver?.disconnectAndForget();
+        shellTargets = uniqueTargets;
+        shellObserver = owner.createObserver((mutations) => {
+          if (!feedRoot || !feedRoot.isConnected) {
+            const rootCandidate = mutations.some((mutation) => [...mutation.addedNodes].some((node) => node.nodeType === 1 && (
+              node.matches?.(".container.is-version8") || node.querySelector?.(".container.is-version8")
+            )));
+            if (rootCandidate || feedRoot && !feedRoot.isConnected) {
+              syncRoot();
+              syncShellObserver();
+            } else {
+              const app = document.querySelector("#app");
+              if (app && !shellTargets.includes(app)) syncShellObserver();
+            }
+            return;
+          }
+          const shouldResolveRoot = mutations.some((mutation) => {
+            if ([...mutation.removedNodes].some((node) => node === feedRoot || node.contains?.(feedRoot))) return true;
+            return [...mutation.addedNodes].some((node) => node.nodeType === 1 && (
+              node.contains?.(feedRoot) || node.matches?.(".container.is-version8") || node.querySelector?.(".container.is-version8")
+            ));
+          });
+          if (shouldResolveRoot) {
+            syncRoot();
+            syncShellObserver();
+          }
+        });
+        for (const target of shellTargets) shellObserver?.observe(target, {
+          childList: true,
+          subtree: !currentRoot
+        });
+      };
+      const flush = () => {
+        pending = false;
+        frameHandle = null;
+        const root = feedRoot;
+        if (pendingRootChange && root) {
+          pendingNodes.clear();
+          for (const child of root.children) pendingNodes.add(child);
+        }
+        const addedNodes = [...pendingNodes];
+        const changedResources = [...pendingResources];
+        pendingNodes.clear();
+        pendingResources.clear();
+        collect(addedNodes);
+        for (const resource of changedResources) resources.add(resource);
+        for (const resource of resources) if (!root?.contains(resource)) resources.delete(resource);
+        const event = {
+          root,
+          addedNodes,
+          resources: [...resources],
+          changedResources,
+          images: [...resources].filter((item) => item instanceof HTMLImageElement),
+          rootChanged: pendingRootChange,
+          reason: pendingReason
+        };
+        pendingRootChange = false;
+        stats.flushes += 1;
+        stats.resourceChanges += changedResources.length;
+        for (const subscriber of subscribers) {
+          try { subscriber(event); } catch (error) { console.error("[BiliKit][feed-runtime]", error); }
+        }
+      };
+      function schedule() {
+        if (pending || owner.disposed) return;
+        pending = true;
+        frameHandle = owner.frame(flush);
+      }
+      const subscribe = (callback) => {
+        subscribers.add(callback);
+        syncRoot();
+        syncShellObserver();
+        pendingReason = "subscribe";
+        schedule();
+        const untrack = owner.addCleanup(() => subscribers.delete(callback));
+        return () => {
+          subscribers.delete(callback);
+          untrack();
+        };
+      };
+      const resourceChanged = (resource) => {
+        if (!feedRoot || !resourceElement(resource) || !feedRoot.contains(resource)) return;
+        pendingResources.add(resource);
+        pendingReason = "resource-change";
+        schedule();
+      };
+      const schedulePageSync = () => {
+        syncShellObserver();
+        syncRoot();
+      };
+      const dispose = () => {
+        rootObserver?.disconnectAndForget();
+        shellObserver?.disconnectAndForget();
+        frameHandle?.cancel();
+        subscribers.clear();
+        resources.clear();
+        pendingNodes.clear();
+        pendingResources.clear();
+      };
+      owner.listen(document, "readystatechange", schedulePageSync);
+      owner.listen(document, "DOMContentLoaded", schedulePageSync, { once: true });
+      owner.listen(window, "pageshow", schedulePageSync);
+      if (isHomePage()) owner.listen(window, "resize", () => {
+        pendingReason = "resize";
+        schedule();
+      }, { passive: true });
+      try {
+        Object.defineProperty(window, "__BILIKIT_HOME_FEED_COORDINATOR_STATS__", { configurable: true, get: () => ({ ...stats }) });
+      } catch {}
+      syncShellObserver();
+      syncRoot();
+      return { subscribe, resourceChanged, getResources: () => [...resources], dispose };
+    });
+  }
+  function installHomeFeedRequestPriority() {
+    if (!isBilibiliDocument() || window.__BILIKIT_HOME_FEED_REQUEST_PRIORITY__) return;
+    const nativeFetch = window.fetch;
+    if (typeof nativeFetch !== "function") return;
+    const runtime = getRuntimeCoordinator();
+    const stats = { highPriorityRequests: 0, lowPriorityRequests: 0, retryRequests: 0, retry5xx: 0, retryNetworkErrors: 0, lastHighUrl: "", lastLowUrl: "", lastRetryUrl: "" };
+    window.__BILIKIT_HOME_FEED_REQUEST_PRIORITY__ = true;
+    try {
+      Object.defineProperty(window, "__BILIKIT_HOME_FEED_STATS__", { configurable: true, get: () => ({ ...stats }) });
+    } catch {
+    }
+    const retryFeedFetch = async (thisArg, input, baseInit, sourceSignal) => {
+      let sourceSignalValue = sourceSignal;
+      if (!sourceSignalValue && baseInit) sourceSignalValue = baseInit.signal;
+      if (!sourceSignalValue && typeof Request === "function" && input instanceof Request) sourceSignalValue = input.signal;
+      const retryable = (() => {
+        const method = String(baseInit?.method || (typeof Request === "function" && input instanceof Request ? input.method : "GET") || "GET").toUpperCase();
+        return method === "GET" || method === "HEAD";
+      })();
+      if (!retryable) return nativeFetch.call(thisArg, input, baseInit);
+      const waitForRetry = () => new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+        const finish = (canContinue) => {
+          if (settled) return;
+          settled = true;
+          sourceSignalValue?.removeEventListener("abort", onAbort);
+          timer?.cancel();
+          resolve(canContinue);
+        };
+        const onAbort = () => finish(false);
+        if (sourceSignalValue?.aborted) return finish(false);
+        sourceSignalValue?.addEventListener("abort", onAbort, { once: true });
+        timer = runtime.timeout(() => finish(!sourceSignalValue?.aborted), 300);
+      });
+      const retryOnce = async (reason) => {
+        if (sourceSignalValue?.aborted || !await waitForRetry()) return null;
+        stats.retryRequests += 1;
+        if (reason === "5xx") stats.retry5xx += 1;
+        else stats.retryNetworkErrors += 1;
+        stats.lastRetryUrl = String(typeof input === "string" ? input : input && input.url || "");
+        return nativeFetch.call(thisArg, input, baseInit);
+      };
+      let firstResponse;
+      try {
+        firstResponse = await nativeFetch.call(thisArg, input, baseInit);
+      } catch (error) {
+        if (sourceSignalValue?.aborted || error?.name === "AbortError" || !(error instanceof TypeError)) throw error;
+        try {
+          const retryResponse = await retryOnce("network");
+          if (retryResponse) return retryResponse;
+        } catch (retryError) {
+          throw retryError;
+        }
+        throw error;
+      }
+      if (firstResponse.status < 500 || firstResponse.status >= 600) return firstResponse;
+      try {
+        const retryResponse = await retryOnce("5xx");
+        if (retryResponse && (retryResponse.status < 500 || retryResponse.status >= 600)) return retryResponse;
+        return retryResponse || firstResponse;
+      } catch {
+        // 服务器已给出 5xx 时，若兜底请求再次发生网络错误，仍把原响应交给 B 站自己的错误处理。
+        return firstResponse;
+      }
+    };
+    const wrappedFetch = function(input, init) {
+      let url = "";
+      try {
+        url = typeof input === "string" ? input : input && input.url || String(input || "");
+      } catch {
+      }
+      const isFeed = HOME_FEED_API_RE.test(url);
+      const priority = isFeed || MEDIA_PLAYURL_API_RE.test(url) ? "high" : HOME_AUX_API_RE.test(url) ? "low" : "";
+      if (!priority) return nativeFetch.apply(this, arguments);
+      if (init != null && typeof init !== "object") return nativeFetch.apply(this, arguments);
+      const nextInit = init && typeof init === "object" ? { ...init, priority: init.priority || priority } : { priority };
+      if (priority === "high") {
+        stats.highPriorityRequests += 1;
+        stats.lastHighUrl = url;
+      } else {
+        stats.lowPriorityRequests += 1;
+        stats.lastLowUrl = url;
+      }
+      if (isFeed) return retryFeedFetch(this, input, nextInit, init?.signal);
+      return nativeFetch.call(this, input, nextInit);
+    };
+    window.fetch = wrappedFetch;
+    runtime.addCleanup(() => {
+      if (window.fetch === wrappedFetch) window.fetch = nativeFetch;
+      if (window.__BILIKIT_HOME_FEED_REQUEST_PRIORITY__) delete window.__BILIKIT_HOME_FEED_REQUEST_PRIORITY__;
+    });
+  }
+  function readHomeImageCache(region) {
+    const keys = [HOME_IMAGE_CACHE_KEY, ...HOME_IMAGE_CACHE_FALLBACK_KEYS];
+    const now = Date.now();
+    for (const storage of [sessionStorage, localStorage]) {
+      for (const key of keys) {
+        const value = readStorageJson(storage, key);
+        if (!value || value.region !== region || now - Number(value.at || 0) > HOME_IMAGE_CACHE_TTL) continue;
+        if (HOME_IMAGE_HOSTS.includes(value.host)) return value;
+      }
+    }
+    return null;
+  }
+  function writeHomeImageCache(region, host) {
+    const value = { region, host, at: Date.now() };
+    writeStorageJson(sessionStorage, HOME_IMAGE_CACHE_KEY, value);
+    writeStorageJson(localStorage, HOME_IMAGE_CACHE_KEY, value);
+  }
+  function currentHomeCdnRegion() {
+    const cached = readCdnRegionCache();
+    if (cached && ["domestic", "foreign"].includes(cached.region)) return { region: cached.region, source: "cache" };
+    try {
+      const stats = window.__BILIKIT_CDN_STATS__;
+      if (stats && ["domestic", "foreign"].includes(stats.region)) return { region: stats.region, source: stats.regionSource || "cdn-stats" };
+    } catch {
+    }
+    return { region: "unknown", source: "pending" };
+  }
+  function imageCdnUrl(value, targetHost) {
+    if (typeof value !== "string" || !targetHost) return value;
+    try {
+      const url = new URL(value, location.href);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return value;
+      // i0/i1/i2 使用同一套 bfs 对象存储；不限制具体业务目录，覆盖封面、横幅、头像、
+      // 动态和搜索结果图片，但不触碰 s1 静态资源或第三方图片。
+      if (!BILI_CDN_IMAGE_RE.test(url.pathname) || !/^i[0-2]\.hdslb\.com$/i.test(url.hostname)) return value;
+      if (url.hostname.toLowerCase() === targetHost) return value;
+      url.hostname = targetHost;
+      return url.href;
+    } catch {
+      return value;
+    }
+  }
+  function sameHomeImageObject(left, right) {
+    try {
+      const a = new URL(left, location.href);
+      const b = new URL(right, location.href);
+      return a.pathname === b.pathname && a.search === b.search && a.hash === b.hash;
+    } catch {
+      return false;
+    }
+  }
+  function imageCdnSrcset(value, targetHost) {
+    if (typeof value !== "string") return value;
+    return value.split(",").map((part) => {
+      const match = part.match(/^(\s*)(\S+)([\s\S]*)$/);
+      if (!match) return part;
+      return `${match[1]}${imageCdnUrl(match[2], targetHost)}${match[3]}`;
+    }).join(",");
+  }
+  function isRewritableHomeImageUrl(value) {
+    try {
+      const url = new URL(value, location.href);
+      return (url.protocol === "http:" || url.protocol === "https:") && BILI_CDN_IMAGE_RE.test(url.pathname) && /^i[0-2]\.hdslb\.com$/i.test(url.hostname);
+    } catch {
+      return false;
+    }
+  }
+  async function chooseHomeImageCdn(region, stats, sampleUrl, runtime, forceProbe = false) {
+    const cached = forceProbe ? null : readHomeImageCache(region);
+    if (cached) {
+      stats.host = cached.host;
+      stats.hostSource = "cache";
+      return cached.host;
+    }
+    const startedAt = performance.now();
+    const probeBase = imageCdnUrl(sampleUrl, HOME_IMAGE_DEFAULT_HOST);
+    if (!probeBase || !isRewritableHomeImageUrl(sampleUrl)) {
+      stats.hostSource = "probe-waiting-for-feed-image";
+      return null;
+    }
+    const results = await Promise.all(HOME_IMAGE_HOSTS.map((host) => new Promise((resolve) => {
+      const image = new Image();
+      image.dataset.bkHomeCdnProbe = "1";
+      image.fetchPriority = "low";
+      const start = performance.now();
+      let settled = false;
+      let timeout = null;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        timeout?.cancel();
+        resolve({ host, ok, duration: Math.round(performance.now() - start) });
+      };
+      image.onload = () => finish(true);
+      image.onerror = () => finish(false);
+      timeout = runtime.timeout(() => finish(false), 2400);
+      image.src = imageCdnUrl(probeBase, host);
+    })));
+    const winner = results.filter((item) => item.ok).sort((a, b) => a.duration - b.duration)[0];
+    const host = winner ? winner.host : null;
+    if (host) writeHomeImageCache(region, host);
+    stats.host = host || "";
+    stats.hostSource = winner ? "active-probe" : "probe-failed-native";
+    stats.probe = { duration: Math.round(performance.now() - startedAt), results };
+    return host;
+  }
+  function installHomeImageCdn() {
+    if (!isBilibiliDocument() || window.__BILIKIT_HOME_IMAGE_CDN__) return;
+    window.__BILIKIT_HOME_IMAGE_CDN__ = true;
+    const runtime = getRuntimeCoordinator();
+    const feedCoordinator = getHomeFeedCoordinator();
+    const regionInfo = currentHomeCdnRegion();
+    const initialImageCache = ["domestic", "foreign"].includes(regionInfo.region) ? readHomeImageCache(regionInfo.region) : null;
+    const stats = {
+      enabled: true,
+      region: regionInfo.region,
+      regionSource: regionInfo.source,
+      host: initialImageCache?.host || "",
+      hostSource: initialImageCache ? "cache" : "native",
+      rewriteCount: 0,
+      fallbackCount: 0,
+      lastSourceHost: "",
+      lastTargetHost: "",
+      probe: null,
+      probeDeferred: !initialImageCache
+    };
+    let targetHost = initialImageCache?.host || null;
+    const hostFailures = new Map();
+    let hostSwitchTimer = null;
+    try {
+      Object.defineProperty(window, "__BILIKIT_HOME_IMAGE_STATS__", { configurable: true, get: () => ({ ...stats }) });
+    } catch {
+    }
+    // CDN 节点偶尔会出现「探测成功、具体对象失败」的边缘情况。
+    // 记录每个资源的原始地址，失败时只回退这一个 picture，避免卡片长期停在骨架或错排状态。
+    const originalResources = new WeakMap();
+    const rewrittenResources = new WeakMap();
+    const fallbackOriginals = new WeakMap();
+    const fallbackBound = new WeakSet();
+    const fallbackArmed = new WeakSet();
+    const fallbackRestoring = new WeakSet();
+    const rememberOriginal = (element, name, value) => {
+      if (!element || !value || fallbackRestoring.has(element)) return;
+      let record = originalResources.get(element);
+      if (!record) {
+        record = {};
+        originalResources.set(element, record);
+      }
+      const rewritten = rewrittenResources.get(element);
+      if (!rewritten || rewritten[name] !== value) record[name] = value;
+    };
+    const restoreOriginalPicture = (image) => {
+      if (!(image instanceof HTMLImageElement)) return;
+      stats.fallbackCount += 1;
+      let failedHost = targetHost;
+      try { failedHost = new URL(image.currentSrc || image.src, location.href).hostname; } catch {}
+      hostFailures.set(failedHost, (hostFailures.get(failedHost) || 0) + 1);
+      const picture = image.closest("picture");
+      const resources = picture ? [image, ...picture.querySelectorAll("source")] : [image];
+      for (const resource of resources) {
+        const record = originalResources.get(resource);
+        if (!record) continue;
+        fallbackRestoring.add(resource);
+        try {
+          for (const [name, value] of Object.entries(record)) {
+            let originals = fallbackOriginals.get(resource);
+            if (!originals) {
+              originals = {};
+              fallbackOriginals.set(resource, originals);
+            }
+            if (name.startsWith("data-")) resource.setAttribute(name, value);
+            else if (name in resource) resource[name] = value;
+            originals[name] = resource.getAttribute(name) ?? value;
+          }
+        } catch {
+        } finally {
+          fallbackRestoring.delete(resource);
+        }
+      }
+      // 探测图标成功不代表每个 bfs 对象都能从该节点取到。连续失败时
+      // 临时切到探测结果中的下一个节点，并更新短期缓存，避免每次刷新
+      // 又把整页图片送回同一个失效节点。
+      if (failedHost === targetHost && (hostFailures.get(failedHost) || 0) >= 3) {
+        const probed = Array.isArray(stats.probe?.results) ? stats.probe.results
+          .filter((item) => item && item.ok)
+          .sort((a, b) => Number(a.duration) - Number(b.duration))
+          .map((item) => item.host) : [];
+        const nextHost = uniqueStrings([...probed, ...HOME_IMAGE_HOSTS])
+          .find((host) => host !== failedHost && (hostFailures.get(host) || 0) < 3);
+        if (nextHost) {
+          targetHost = nextHost;
+          stats.host = nextHost;
+          stats.hostSource = "fallback-switch";
+          if (["domestic", "foreign"].includes(stats.region)) writeHomeImageCache(stats.region, nextHost);
+          if (!hostSwitchTimer) {
+            hostSwitchTimer = runtime.timeout(() => {
+              hostSwitchTimer = null;
+              scanPendingHomeResources();
+            }, 0);
+          }
+        }
+      }
+    };
+    const bindFallback = (element) => {
+      const image = element instanceof HTMLImageElement ? element : element.closest?.("picture")?.querySelector("img");
+      if (!(image instanceof HTMLImageElement) || fallbackBound.has(image)) return;
+      fallbackBound.add(image);
+      fallbackArmed.add(image);
+    };
+    const rewrite = (element, name, value) => {
+      if (!element || !targetHost || element.dataset?.bkHomeCdnProbe === "1" || fallbackRestoring.has(element)) return value;
+      const fallbackRecord = fallbackOriginals.get(element);
+      if (fallbackRecord && name in fallbackRecord) {
+        if (fallbackRecord[name] === value) return value;
+        delete fallbackRecord[name];
+      }
+      if (name === "poster" || element.closest?.("video, [class*='preview'], [class*='Preview'], [class*='hover-video'], [class*='HoverVideo'], [class*='image--hover']")) return value;
+      if (isSource(element)) {
+        const displayedImage = element.closest("picture")?.querySelector("img");
+        if (displayedImage?.complete && displayedImage.naturalWidth > 0) return value;
+      }
+      if (isImage(element) && element.complete && element.naturalWidth > 0 && name === "srcset") return value;
+      if (isImage(element) && element.complete && element.naturalWidth > 0 && name === "src") {
+        const current = element.currentSrc || element.getAttribute("src") || "";
+        if (current && sameHomeImageObject(current, value)) return value;
+      }
+      const next = name === "srcset" ? imageCdnSrcset(value, targetHost) : imageCdnUrl(value, targetHost);
+      if (next !== value) {
+        rememberOriginal(element, name, value);
+        let rewritten = rewrittenResources.get(element);
+        if (!rewritten) {
+          rewritten = {};
+          rewrittenResources.set(element, rewritten);
+        }
+        rewritten[name] = next;
+        bindFallback(element);
+        stats.rewriteCount += 1;
+        try {
+          stats.lastSourceHost = new URL(String(value), location.href).hostname;
+        } catch {
+        }
+        stats.lastTargetHost = targetHost;
+      }
+      return next;
+    };
+    const patchProperty = (proto, name) => {
+      if (!proto) return;
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, name);
+        if (!descriptor || typeof descriptor.set !== "function" || descriptor.configurable === false) return;
+        const setter = function(value) {
+          const requested = String(value);
+          const next = rewrite(this, name, requested);
+          const current = this.getAttribute?.(name);
+          if (isImage(this) && name === "src" && this.complete && this.naturalWidth > 0
+              && sameHomeImageObject(this.currentSrc || current || "", requested)) return;
+          if (current === next && (name !== "src" || !isImage(this) || this.complete && this.naturalWidth > 0)) return;
+          descriptor.set.call(this, next);
+          feedCoordinator?.resourceChanged(this);
+        };
+        Object.defineProperty(proto, name, {
+          ...descriptor,
+          set: setter
+        });
+        runtime.addCleanup(() => {
+          if (Object.getOwnPropertyDescriptor(proto, name)?.set === setter) Object.defineProperty(proto, name, descriptor);
+        });
+      } catch {
+      }
+    };
+    const patchAttributes = (proto, names) => {
+      if (!proto || typeof proto.setAttribute !== "function") return;
+      try {
+        const nativeSetAttribute = proto.setAttribute;
+        const originalDescriptor = Object.getOwnPropertyDescriptor(proto, "setAttribute");
+      const wrappedSetAttribute = function(name, value) {
+          const key = String(name).toLowerCase();
+          const previous = names.includes(key) ? this.getAttribute(key) : null;
+          const next = names.includes(key) && !["data-src", "data-lazy-src"].includes(key)
+            ? rewrite(this, key, String(value)) : value;
+          if (key === "src" && this instanceof HTMLImageElement && this.complete && this.naturalWidth > 0
+              && sameHomeImageObject(this.currentSrc || previous || "", String(value))) return;
+          if (previous === next && (key !== "src" || !(this instanceof HTMLImageElement) || this.complete && this.naturalWidth > 0)) return;
+          const result = nativeSetAttribute.call(this, name, next);
+          if (names.includes(key)) feedCoordinator?.resourceChanged(this);
+          return result;
+        };
+        proto.setAttribute = wrappedSetAttribute;
+        runtime.addCleanup(() => {
+          if (proto.setAttribute !== wrappedSetAttribute) return;
+          if (originalDescriptor) Object.defineProperty(proto, "setAttribute", originalDescriptor);
+          else delete proto.setAttribute;
+        });
+      } catch {
+      }
+    };
+    try {
+      patchProperty(HTMLImageElement.prototype, "src");
+      patchProperty(HTMLImageElement.prototype, "srcset");
+      patchAttributes(HTMLImageElement.prototype, ["src", "srcset", "data-src", "data-lazy-src"]);
+      patchProperty(window.HTMLSourceElement?.prototype, "src");
+      patchProperty(window.HTMLSourceElement?.prototype, "srcset");
+      patchAttributes(window.HTMLSourceElement?.prototype, ["src", "srcset"]);
+      patchProperty(window.HTMLVideoElement?.prototype, "poster");
+      patchAttributes(window.HTMLVideoElement?.prototype, ["poster"]);
+    } catch {
+    }
+    runtime.listen(document, "error", (event) => {
+      const image = event.target;
+      if (!(image instanceof HTMLImageElement) || !fallbackArmed.has(image)) return;
+      fallbackArmed.delete(image);
+      fallbackBound.delete(image);
+      restoreOriginalPicture(image);
+    }, true);
+    const isImage = (element) => element instanceof HTMLImageElement;
+    const isSource = (element) => typeof HTMLSourceElement === "function" && element instanceof HTMLSourceElement;
+    const isVideo = (element) => typeof HTMLVideoElement === "function" && element instanceof HTMLVideoElement;
+    const isResourceElement = (element) => isImage(element) || isSource(element) || isVideo(element);
+    const scan = (root) => {
+      if (!root || !targetHost) return;
+      const resources = Array.isArray(root) ? root.filter(isResourceElement)
+        : isResourceElement(root) ? [root] : [...root.querySelectorAll?.("img,source,video") || []];
+      for (const resource of resources) {
+        // 已经完成的图片不要为了换节点重新下载；框架后续通过属性/属性 setter
+        // 更新时仍会经过上面的拦截器，因此不会漏掉后续信息流。
+        if (isImage(resource) && resource.complete && resource.naturalWidth > 0) continue;
+        if (isSource(resource)) {
+          const displayedImage = resource.closest("picture")?.querySelector("img");
+          if (displayedImage?.complete && displayedImage.naturalWidth > 0) continue;
+        }
+        if (isImage(resource) || isSource(resource)) {
+          const source = resource.getAttribute("src") || resource.src || "";
+          const next = rewrite(resource, "src", source);
+          if (next !== source) resource.src = next;
+          if (isImage(resource)) {
+            for (const name of ["data-src", "data-lazy-src"]) {
+              const lazySource = resource.getAttribute(name);
+              if (!lazySource) continue;
+              const nextLazySource = rewrite(resource, name, lazySource);
+              if (nextLazySource !== lazySource) resource.setAttribute(name, nextLazySource);
+            }
+          }
+        }
+        const srcset = resource.getAttribute("srcset");
+        if (srcset) {
+          const nextSrcset = rewrite(resource, "srcset", srcset);
+          if (nextSrcset !== srcset) resource.srcset = nextSrcset;
+        }
+        if (isVideo(resource)) {
+          const poster = resource.getAttribute("poster") || resource.poster || "";
+          const nextPoster = rewrite(resource, "poster", poster);
+          if (nextPoster !== poster) resource.poster = nextPoster;
+        }
+      }
+    };
+    const attach = () => {
+      if (feedCoordinator) {
+        feedCoordinator.subscribe(({ addedNodes, changedResources }) => {
+          for (const node of addedNodes) scan(node);
+          for (const resource of changedResources) scan(resource);
+        });
+        return;
+      }
+      // document-start 时 body 还不存在，但 documentElement 通常已经存在；观察 html
+      // 可以捕获 body 创建和首批图片，避免等到 DOMContentLoaded 才开始改写。
+      const root = document.body || document.documentElement;
+      if (!root) {
+        document.addEventListener("readystatechange", attach, { once: true });
+        return;
+      }
+      scan(root);
+      let pending = false;
+      const roots = new Set();
+      const observer = runtime.createObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.type === "attributes") {
+            if (isResourceElement(mutation.target)) roots.add(mutation.target);
+            continue;
+          }
+          for (const node of mutation.addedNodes) if (node.nodeType === 1) roots.add(node);
+        }
+        if (pending || !roots.size) return;
+        pending = true;
+        runtime.frame(() => {
+          pending = false;
+          const current = [...roots];
+          roots.clear();
+          current.forEach(scan);
+          if (!targetHost) scheduleProbe(false);
+        });
+      });
+      observer?.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["src", "srcset", "poster"]
+      });
+      runtime.addCleanup(() => {
+        if (window.__BILIKIT_HOME_IMAGE_CDN__) delete window.__BILIKIT_HOME_IMAGE_CDN__;
+      });
+    };
+    attach();
+    let probeStarted = false;
+    let probeRunning = false;
+    let probeRegion = "";
+    let lastProbeAt = 0;
+    let probeUnlocked = !!initialImageCache;
+    let forceProbePending = false;
+    let networkProbeTimer = null;
+    const scanPendingHomeResources = () => {
+      if (!targetHost) return;
+      if (feedCoordinator) {
+        scan(feedCoordinator.getResources().filter((resource) => !(isImage(resource) && resource.complete && resource.naturalWidth > 0)));
+        return;
+      }
+      scan(document.body || document.documentElement);
+    };
+    const pickProbeImage = () => {
+      const resources = feedCoordinator?.getResources() || [...document.querySelectorAll("img[src],img[srcset]")].slice(0, 80);
+      const candidates = resources.filter((resource) => {
+        if (!(resource instanceof HTMLImageElement) || !resource.isConnected || !resource.currentSrc && !resource.src) return false;
+        if (resource.closest("video, [class*='preview'], [class*='Preview'], [class*='hover-video'], [class*='HoverVideo'], [class*='image--hover']")) return false;
+        const source = resource.currentSrc || resource.src;
+        return BILI_MEDIA_IMAGE_RE.test(source) && isRewritableHomeImageUrl(source);
+      }) || [];
+      candidates.sort((a, b) => Number(b.complete && b.naturalWidth > 0) - Number(a.complete && a.naturalWidth > 0));
+      return candidates[0]?.currentSrc || candidates[0]?.src || "";
+    };
+    const scheduleProbe = (forceProbe = false) => {
+      const regionState = currentHomeCdnRegion();
+      const nextRegion = regionState.region;
+      if (!["domestic", "foreign"].includes(nextRegion)) return;
+      // 没有缓存时，等首屏 load/空闲窗口再测速，避免三个探测请求和首页首轮
+      // 图片争抢连接；有缓存时仍可在 document-start 立即复用最快节点。
+      if (!probeUnlocked && !readHomeImageCache(nextRegion) && !forceProbe) return;
+      if (probeRunning) {
+        forceProbePending = forceProbePending || forceProbe;
+        return;
+      }
+      if (probeStarted && probeRegion === nextRegion && !forceProbe && targetHost) return;
+      if (probeStarted && probeRegion === nextRegion && !forceProbe && Date.now() - lastProbeAt < 10e3) return;
+      if (!forceProbe && !probeUnlocked && !readHomeImageCache(nextRegion)) return;
+      const sampleUrl = pickProbeImage();
+      if (!sampleUrl) {
+        stats.hostSource = "probe-waiting-for-feed-image";
+        return;
+      }
+      probeStarted = true;
+      probeRegion = nextRegion;
+      lastProbeAt = Date.now();
+      probeRunning = true;
+      const run = async () => {
+        stats.region = nextRegion;
+        stats.regionSource = regionState.source;
+        stats.probeDeferred = false;
+        targetHost = await chooseHomeImageCdn(nextRegion, stats, sampleUrl, runtime, forceProbe);
+        if (!targetHost) return;
+        if (currentHomeCdnRegion().region !== nextRegion) return;
+        scanPendingHomeResources();
+      };
+      void run().finally(() => {
+        probeRunning = false;
+        const currentRegion = currentHomeCdnRegion().region;
+        if (forceProbePending || currentRegion !== probeRegion) {
+          const forceNext = forceProbePending;
+          forceProbePending = false;
+          runtime.timeout(() => scheduleProbe(forceNext), 0);
+        }
+      });
+    };
+    const queueNetworkProbe = () => {
+      if (!navigator.onLine) return;
+      networkProbeTimer?.cancel();
+      networkProbeTimer = runtime.timeout(() => {
+        networkProbeTimer = null;
+        scheduleProbe(true);
+      }, 450);
+    };
+    runtime.listen(window, "bilikit:cdn-region", () => {
+      if (!networkProbeTimer) scheduleProbe(false);
+    });
+    runtime.listen(window, "online", queueNetworkProbe);
+    runtime.listen(navigator.connection, "change", queueNetworkProbe);
+    feedCoordinator?.subscribe(({ addedNodes, changedResources }) => {
+      if (!targetHost) scheduleProbe(false);
+      for (const node of addedNodes) scan(node);
+      for (const resource of changedResources) scan(resource);
+    });
+    const unlockProbe = () => {
+      probeUnlocked = true;
+      scheduleProbe();
+    };
+    if (!initialImageCache && document.readyState === "complete") {
+      if (typeof requestIdleCallback === "function") requestIdleCallback(unlockProbe, { timeout: 2500 });
+      else runtime.timeout(unlockProbe, 1500);
+    } else {
+      runtime.listen(window, "load", () => {
+        if (typeof requestIdleCallback === "function") requestIdleCallback(unlockProbe, { timeout: 2500 });
+        else runtime.timeout(unlockProbe, 1500);
+      }, { once: true });
+      // load 被页面异常阻塞时仍不永久失去自适应，只在首轮内容完成后再兜底。
+      runtime.timeout(unlockProbe, 10e3);
+    }
+    runtime.addCleanup(() => {
+      hostSwitchTimer?.cancel();
+      networkProbeTimer?.cancel();
+      if (window.__BILIKIT_HOME_IMAGE_CDN__) delete window.__BILIKIT_HOME_IMAGE_CDN__;
+    });
+  }
+  function preconnect(hosts = PC_HOSTS) {
+    const root = document.head || document.documentElement;
+    if (!root) return;
     const now = performance.now();
     if (now - lastPc < PC_WINDOW) return;
-    lastPc = now;
-    pcLinks.forEach((l) => l.remove());
-    pcLinks = PC_HOSTS.map((href) => {
+    const wanted = [...new Set(hosts)];
+    if (!wanted.length) return;
+    const normalized = (value) => String(value || "").replace(/\/+$/, "");
+    const existing = new Set();
+    document.querySelectorAll('link[rel~="preconnect"][href]').forEach((link) => {
+      existing.add(normalized(link.href));
+    });
+    for (const href of wanted) {
+      if (existing.has(normalized(href))) continue;
       const l = document.createElement("link");
       l.rel = "preconnect";
       l.href = href;
-      document.head.appendChild(l);
-      return l;
+      l.crossOrigin = "anonymous";
+      root.appendChild(l);
+      existing.add(normalized(href));
+    }
+    lastPc = now;
+  }
+  function installSearchPreconnect() {
+    if (!isSearchPage() || window.__BILIKIT_SEARCH_PRECONNECT__) return;
+    window.__BILIKIT_SEARCH_PRECONNECT__ = true;
+    const run = () => preconnect(SEARCH_PRECONNECT_HOSTS);
+    if (document.head) run();
+    else document.addEventListener("DOMContentLoaded", run, { once: true });
+  }
+  function installHomePreconnect() {
+    if (!isHomePage() || window.__BILIKIT_HOME_PRECONNECT__) return;
+    window.__BILIKIT_HOME_PRECONNECT__ = true;
+    preconnect(HOME_PRECONNECT_HOSTS);
+  }
+  function installHomeFeedLayoutStability() {
+    if (!isHomePage() || window.__BILIKIT_HOME_FEED_LAYOUT__) return;
+    window.__BILIKIT_HOME_FEED_LAYOUT__ = true;
+    const style = document.createElement("style");
+    style.textContent = [
+      `.container.is-version8 > [${HOME_FEED_LAYOUT_FIX_ATTR}="1"],.container.is-version8 > [${HOME_FEED_LAYOUT_MARGIN_ATTR}="0"]{margin-top:0!important}`,
+      `.container.is-version8 > [${HOME_FEED_LAYOUT_MARGIN_ATTR}="24"]{margin-top:24px!important}`,
+      `.container.is-version8 > [${HOME_FEED_LAYOUT_MARGIN_ATTR}="40"]{margin-top:40px!important}`
+    ].join("");
+    const appendStyle = () => {
+      const root = document.head || document.documentElement;
+      if (root && !style.isConnected) root.appendChild(style);
+    };
+    const runtime = getRuntimeCoordinator();
+    runtime.listen(document, "DOMContentLoaded", appendStyle, { once: true });
+    appendStyle();
+    runtime.addCleanup(() => style.remove());
+    const originalMargins = new WeakMap();
+    const stats = { enabled: true, normalizedCount: 0, lastNormalizedCount: 0, normalizedRows: 0 };
+    try {
+      Object.defineProperty(window, "__BILIKIT_HOME_LAYOUT_STATS__", { configurable: true, get: () => ({ ...stats }) });
+    } catch {
+    }
+    const feedCoordinator = getHomeFeedCoordinator();
+    const layoutCleanup = runtime.addCleanup(() => {
+      if (window.__BILIKIT_HOME_FEED_LAYOUT__) delete window.__BILIKIT_HOME_FEED_LAYOUT__;
+    });
+    let pending = false;
+    let feedRoot = null;
+    let lastSignature = "";
+    const CARD_RE = /(?:^|\s)(?:feed-card|floor-single-card|bili-feed-card|bili-video-card|load-more-anchor)(?:\s|$)/;
+    const schedule = () => {
+      if (pending) return;
+      pending = true;
+      runtime.frame(apply);
+    };
+    const apply = () => {
+      pending = false;
+      const root = feedRoot && feedRoot.isConnected ? feedRoot : document.querySelector(".container.is-version8");
+      if (!root) return;
+      if (root !== feedRoot) {
+        feedRoot = root;
+        lastSignature = "";
+      }
+      const children = [...root.children];
+      // 按整页网格的逻辑行处理，而不是只处理首个推荐楼层。
+      // B 站不同楼层混用了 0/24/40px 顶部间距，导致第三排开始错位。
+      const candidates = children.filter((el) => {
+        return CARD_RE.test(String(el.className || "")) && getComputedStyle(el).display !== "none" && el.offsetWidth > 0;
+      });
+      const active = new Set(candidates);
+      root.querySelectorAll(`:scope > [${HOME_FEED_LAYOUT_FIX_ATTR}="1"], :scope > [${HOME_FEED_LAYOUT_MARGIN_ATTR}]`).forEach((el) => {
+        if (!active.has(el)) {
+          el.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
+          el.removeAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
+          originalMargins.delete(el);
+        }
+      });
+      const rows = new Map();
+      for (const element of candidates) {
+        let margin = originalMargins.get(element);
+        // 数据属性不会被 B 站悬停预览的 class/style 重绘覆盖；保留首次记录的
+        // 原始间距，避免 CSS 修复值把网格行误判成已统一。
+        if (margin == null) {
+          margin = Number.parseFloat(getComputedStyle(element).marginTop) || 0;
+          originalMargins.set(element, margin);
+        }
+        // offsetTop 包含当前卡片自己的 margin；减去原始 margin 后可识别
+        // 同一 CSS Grid 行中混用 0/24/40px 的卡片。
+        const rowTop = Math.round((element.offsetTop - margin) * 10) / 10;
+        if (!rows.has(rowTop)) rows.set(rowTop, []);
+        rows.get(rowTop).push({ element, margin });
+      }
+      const signature = [...rows.entries()].map(([rowTop, row]) => {
+        return `${rowTop}:${row.map((item) => `${children.indexOf(item.element)}=${item.margin}`).join(",")}`;
+      }).join("|");
+      let needsRepair = false;
+      for (const row of rows.values()) {
+        const targetMargin = Math.min(...row.map((item) => item.margin));
+        const mixed = row.some((item) => Math.abs(item.margin - targetMargin) > 1);
+        for (const item of row) {
+          const shouldNormalize = mixed && Math.abs(item.margin - targetMargin) > 1;
+          const marker = item.element.getAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
+          if (shouldNormalize && marker !== String(Math.round(targetMargin))) {
+            needsRepair = true;
+          } else if (!shouldNormalize && (item.element.hasAttribute(HOME_FEED_LAYOUT_FIX_ATTR) || item.element.hasAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR))) {
+            needsRepair = true;
+          }
+        }
+      }
+      // 签名相同不代表外部代码没有移除我们之前写入的稳定样式；
+      // 只有在布局签名和实际修复状态都未变化时才跳过本轮。
+      if (signature === lastSignature && !needsRepair) return;
+      lastSignature = signature;
+      let normalizedCount = 0;
+      let normalizedRows = 0;
+      for (const row of rows.values()) {
+        const targetMargin = Math.min(...row.map((item) => item.margin));
+        const mixed = row.some((item) => Math.abs(item.margin - targetMargin) > 1);
+        if (mixed) normalizedRows += 1;
+        for (const item of row) {
+          const shouldNormalize = mixed && Math.abs(item.margin - targetMargin) > 1;
+          if (shouldNormalize) {
+            const target = String(Math.round(targetMargin));
+            if (target === "0") item.element.setAttribute(HOME_FEED_LAYOUT_FIX_ATTR, "1");
+            else item.element.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
+            item.element.setAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR, target);
+            normalizedCount += 1;
+          } else {
+            item.element.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
+            item.element.removeAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
+          }
+        }
+      }
+      stats.normalizedCount = normalizedCount;
+      stats.lastNormalizedCount = normalizedCount;
+      stats.normalizedRows = normalizedRows;
+    };
+    feedCoordinator?.subscribe(({ root, rootChanged, addedNodes, reason }) => {
+      if (rootChanged || !feedRoot?.isConnected) feedRoot = root;
+      if (rootChanged || addedNodes.length || reason === "resize") schedule();
+    });
+    runtime.addCleanup(() => {
+      for (const element of feedRoot?.querySelectorAll?.(`[${HOME_FEED_LAYOUT_FIX_ATTR}], [${HOME_FEED_LAYOUT_MARGIN_ATTR}]`) || []) {
+        element.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
+        element.removeAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
+      }
+      layoutCleanup();
+    });
+    schedule();
+  }
+  function installHomeFeedImagePriority() {
+    if (!isHomePage() || window.__BILIKIT_HOME_FEED_PRIORITY__) return;
+    if (typeof IntersectionObserver !== "function") return;
+    window.__BILIKIT_HOME_FEED_PRIORITY__ = true;
+    const runtime = getRuntimeCoordinator();
+    const feedCoordinator = getHomeFeedCoordinator();
+    const stats = {
+      enabled: true,
+      preloadRows: HOME_FEED_PRELOAD_ROWS,
+      preloadDistance: 0,
+      observedImages: 0,
+      preloadedImages: 0,
+      highPriorityImages: 0,
+      mutationBatches: 0,
+      scannedCards: 0
+    };
+    try {
+      Object.defineProperty(window, "__BILIKIT_HOME_FEED_PRIORITY_STATS__", { configurable: true, get: () => ({ ...stats }) });
+    } catch {
+    }
+    let observer = null;
+    let feedRoot = null;
+    let preloadDistance = 0;
+    let observed = new WeakMap();
+    const promoted = new WeakMap();
+    let preloadWindowTop = NaN;
+    let preloadWindowCount = 0;
+    const getFeedRoot = () => document.querySelector(".container.is-version8");
+    const getPreloadDistance = (root) => {
+      const grid = getComputedStyle(root);
+      const gap = Number.parseFloat(grid.rowGap || grid.gap) || 20;
+      const sample = [...root.children].find((element) => {
+        return element.offsetWidth > 0 && /feed-card|floor-single-card|bili-feed-card|bili-video-card/.test(String(element.className));
+      });
+      const height = sample ? sample.getBoundingClientRect().height : 207;
+      return Math.round(Math.min(HOME_FEED_PRELOAD_MAX, Math.max(HOME_FEED_PRELOAD_MIN, (height + gap) * HOME_FEED_PRELOAD_ROWS)));
+    };
+    const inHomeFeed = (img) => {
+      const root = img.closest(".container.is-version8");
+      if (!root || img.closest(".recommended-swipe")) return false;
+      if (img.closest("video, [class*='preview'], [class*='Preview'], [class*='hover-video'], [class*='HoverVideo'], [class*='image--hover']")) return false;
+      const card = img.closest(".feed-card, .floor-single-card, .bili-feed-card, .bili-video-card");
+      if (!card || card.querySelector("video")) return false;
+      const images = [...card.querySelectorAll("img")];
+      return images.length <= 1 || img === images[0];
+    };
+    const watch = (img) => {
+      if (!(img instanceof HTMLImageElement) || !inHomeFeed(img)) return;
+      const source = img.currentSrc || img.src || img.getAttribute("src") || "";
+      if (!BILI_MEDIA_IMAGE_RE.test(source) || observed.get(img) === source) return;
+      observed.set(img, source);
+      stats.observedImages += 1;
+      observer.observe(img);
+    };
+    const scan = (root) => {
+      if (!root || (root.nodeType !== 1 && root.nodeType !== 9)) return;
+      if (root instanceof HTMLImageElement) watch(root);
+      root.querySelectorAll?.("img").forEach(watch);
+    };
+    const promote = (img) => {
+      if (!(img instanceof HTMLImageElement)) return false;
+      const source = img.currentSrc || img.src || img.getAttribute("src") || "";
+      if (promoted.get(img) === source) return true;
+      const needsLoad = !img.complete || !img.naturalWidth;
+      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+      if (!Number.isFinite(preloadWindowTop) || Math.abs(scrollTop - preloadWindowTop) > Math.max(160, preloadDistance)) {
+        preloadWindowTop = scrollTop;
+        preloadWindowCount = 0;
+      }
+      // 只允许一个视口窗口内的一小批图片进入 eager，避免刷新时图片
+      // 抢占信息流接口和 B 站自身后续卡片请求；滚动一段距离后重新给预算。
+      if (needsLoad && preloadWindowCount >= HOME_FEED_PRELOAD_BATCH) return false;
+      promoted.set(img, source);
+      try {
+        img.fetchPriority = "high";
+        stats.highPriorityImages += 1;
+      } catch {
+      }
+      if (needsLoad) {
+        try {
+          if (img.loading === "lazy") img.loading = "eager";
+          preloadWindowCount += 1;
+          stats.preloadedImages += 1;
+        } catch {
+        }
+      }
+      return true;
+    };
+    const rebuildObserver = (requestedRoot) => {
+        const root = requestedRoot?.isConnected ? requestedRoot : getFeedRoot();
+      if (!root) return false;
+      const distance = getPreloadDistance(root);
+      if (observer && root === feedRoot && Math.abs(distance - preloadDistance) < 24) return false;
+      observer?.disconnect();
+      observed = new WeakMap();
+      feedRoot = root;
+      preloadDistance = distance;
+      stats.preloadDistance = distance;
+      observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const img = entry.target;
+          if (promote(img)) observer.unobserve(img);
+        }
+      }, { rootMargin: `0px 0px ${distance}px 0px` });
+      return true;
+    };
+    const processFeedUpdate = (event) => {
+      stats.mutationBatches += 1;
+      feedRoot = event.root || feedRoot;
+      const observerRebuilt = rebuildObserver(feedRoot);
+      if (event.rootChanged || observerRebuilt) scan(feedRoot);
+      for (const node of event.addedNodes) {
+        scan(node);
+        stats.scannedCards += 1;
+      }
+      for (const resource of event.changedResources) {
+        if (resource instanceof HTMLImageElement) watch(resource);
+      }
+    };
+    feedCoordinator?.subscribe(processFeedUpdate);
+    runtime.addCleanup(() => {
+      observer?.disconnect();
+      if (window.__BILIKIT_HOME_FEED_PRIORITY__) delete window.__BILIKIT_HOME_FEED_PRIORITY__;
     });
   }
   function isVideoUrl(u) {
@@ -5503,6 +7157,19 @@
     }
   }
   function resolve(target) {
+    if (!(target instanceof Element)) return null;
+    // 视频卡片里的「稍后再看 / 不感兴趣 / 更多」属于 B 站原生操作。
+    // 它们常常嵌在封面 <a> 内，必须在识别视频链接前放行，否则捕获阶段会截断原生请求。
+    if (target.closest([
+      "button",
+      '[role="button"]',
+      '[aria-haspopup="menu"]',
+      ".bili-watch-later",
+      ".bili-watch-later--wrap",
+      ".bili-video-card__no-interest",
+      ".bili-video-card__info--no-interest",
+      ".bili-video-card__more"
+    ].join(","))) return null;
     if (target.closest(".bk-feed-noopen")) return null;
     const pick = (root2, url) => {
       const img = root2.querySelector("img");
@@ -5520,9 +7187,20 @@
     if (window.__BILIKIT_SITE_DRAWER__) return;
     if (window.top !== window.self) return;
     window.__BILIKIT_SITE_DRAWER__ = true;
+    const homePage = isHomePage();
+    const searchPage = isSearchPage();
+    const playPage = isPlayPage();
+    if (searchPage) installSearchPreconnect();
+    let mode = get("feed.openMode", DEFAULT_OPEN_MODE);
+    const syncMode = () => {
+      mode = get("feed.openMode", DEFAULT_OPEN_MODE);
+    };
+    window.addEventListener(SETTINGS_EVENT, syncMode);
+    window.addEventListener("storage", (e) => {
+      if (!e.key || e.key === KEY) syncMode();
+    });
     document.addEventListener("click", (e) => {
       if (isPlayPage()) return;
-      const mode = get("feed.openMode", DEFAULT_OPEN_MODE);
       if (mode === "current") return;
       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       const hit = resolve(e.target);
@@ -5539,12 +7217,25 @@
       const web = mode === "drawer-web";
       openDrawer(hit.url, hit.cover, web, web && get("feed.drawerImmersive", true));
     }, true);
-    document.addEventListener("mouseover", (e) => {
+    let lastHoverCard = null;
+    const onHover = (e) => {
       if (isPlayPage()) return;
-      const mode = get("feed.openMode", DEFAULT_OPEN_MODE);
       if (mode !== "drawer" && mode !== "drawer-web") return;
-      if (resolve(e.target)) preconnect();
-    }, true);
+      const currentCard = e.target.closest("a[href], [data-bvid]");
+      const previousCard = e.relatedTarget instanceof Element ? e.relatedTarget.closest("a[href], [data-bvid]") : null;
+      if (!currentCard) {
+        lastHoverCard = null;
+        return;
+      }
+      if (previousCard === currentCard || lastHoverCard === currentCard) return;
+      lastHoverCard = currentCard;
+      if (!resolve(e.target)) return;
+      preconnect();
+    };
+    // 搜索页已在加载早期预连接，不再为原生悬停预览和结果列表安装全局 mouseover 监听。
+    // 首页已在 document-start 预连接首屏域名，不再为每次悬停执行一次命中查询。
+    // 不改变 B 站原生预览，只移除 BiliKit 自身重复的预连接监听。
+    if (!homePage && !searchPage && !playPage) document.addEventListener("mouseover", onHover, true);
   }
   const drawerFrame = window.top !== window.self ? readDrawerFrameName(window.name) : null;
   if (drawerFrame && !drawerMark(location.hash)) {
@@ -5927,6 +7618,11 @@
     wayBack
     // 视频页回退栈胶囊（顶层 + 抽屉 iframe）
   );
+  installHomeFeedRequestPriority();
+  installHomePreconnect();
+  installHomeImageCdn();
+  installHomeFeedLayoutStability();
+  installHomeFeedImagePriority();
   runAll();
   installSiteDrawer();
   mountPanel();

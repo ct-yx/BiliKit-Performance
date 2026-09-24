@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.6.4
+// @version      0.6.6
 // @author       shiinayane
 // @description  B 站性能优化：优化信息流图片 CDN、加载调度和布局稳定性，同时保留原生预览行为。
 // @license      MIT
@@ -2125,7 +2125,7 @@
       }
     })();
   }
-  const VERSION = "0.6.4";
+  const VERSION = "0.6.6";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -6011,6 +6011,8 @@
   const HOME_FEED_AUTO_LOAD_MAX_PROBES = 3;
   const HOME_FEED_AUTO_LOAD_TIMEOUT = 8e3;
   const HOME_FEED_AUTO_LOAD_RETRY_DELAY = 800;
+  const HOME_FEED_AUTO_LOAD_DOM_SETTLE = 120;
+  const HOME_FEED_AUTO_LOAD_INTERNAL_SCROLL_GRACE = 500;
   const HOME_FEED_CARD_RE = /(?:^|\s)(?:feed-card|floor-single-card|bili-feed-card|bili-video-card)(?:\s|$)/;
   const HOME_FEED_CARD_SELECTOR = ".feed-card, .floor-single-card, .bili-feed-card, .bili-video-card";
   const HOME_FEED_FEED_HEARTBEAT_TTL = 15e3;
@@ -6314,6 +6316,111 @@
       syncShellObserver();
       syncRoot();
       return { subscribe, resourceChanged, getResources: () => [...resources], dispose };
+    });
+  }
+  function getHomeFeedLayoutCoordinator() {
+    if (!isHomeDocument()) return null;
+    const runtime = getRuntimeCoordinator();
+    return runtime.service("home-feed-layout", (owner) => {
+      const resumeListeners = new Set();
+      const afterResumeCallbacks = new Map();
+      const activeTokens = new Set();
+      const stats = {
+        pauseDepth: 0,
+        beginCount: 0,
+        endCount: 0,
+        deferredCount: 0,
+        resumeCount: 0,
+        lastReason: "",
+        pending: false
+      };
+      let tokenId = 0;
+      let pendingReasons = new Set();
+      const begin = (reason = "unspecified") => {
+        const token = { id: ++tokenId, reason, active: true };
+        activeTokens.add(token);
+        stats.beginCount += 1;
+        stats.pauseDepth = activeTokens.size;
+        return token;
+      };
+      const defer = (reason = "layout-update") => {
+        if (!activeTokens.size) return false;
+        stats.deferredCount += 1;
+        stats.pending = true;
+        pendingReasons.add(reason);
+        return true;
+      };
+      const onResume = (callback) => {
+        if (typeof callback !== "function") return () => {};
+        resumeListeners.add(callback);
+        const untrack = owner.addCleanup(() => resumeListeners.delete(callback));
+        return () => {
+          resumeListeners.delete(callback);
+          untrack();
+        };
+      };
+      const afterResume = (callback) => {
+        if (typeof callback !== "function") return () => {};
+        if (activeTokens.size) {
+          const untrack = owner.addCleanup(() => afterResumeCallbacks.delete(callback));
+          afterResumeCallbacks.set(callback, untrack);
+          return () => {
+            afterResumeCallbacks.delete(callback);
+            untrack();
+          };
+        }
+        const frame = owner.frame(callback);
+        return () => frame.cancel();
+      };
+      const end = (token) => {
+        if (!token || !activeTokens.has(token) || !token.active) return false;
+        token.active = false;
+        activeTokens.delete(token);
+        stats.endCount += 1;
+        stats.pauseDepth = activeTokens.size;
+        if (activeTokens.size) return true;
+        const wasPending = stats.pending;
+        const reason = [...pendingReasons].join(",") || token.reason || "resume";
+        stats.pending = false;
+        pendingReasons = new Set();
+        if (!wasPending) {
+          const callbacks = [...afterResumeCallbacks.entries()];
+          afterResumeCallbacks.clear();
+          for (const [callback, untrack] of callbacks) {
+            untrack();
+            owner.frame(callback);
+          }
+          return true;
+        }
+        stats.resumeCount += 1;
+        stats.lastReason = reason;
+        for (const callback of resumeListeners) {
+          try { callback({ reason, deferred: true }); } catch (error) { console.error("[BiliKit][layout-runtime]", error); }
+        }
+        const callbacks = [...afterResumeCallbacks.entries()];
+        afterResumeCallbacks.clear();
+        for (const [callback, untrack] of callbacks) {
+          untrack();
+          owner.frame(callback);
+        }
+        return true;
+      };
+      const dispose = () => {
+        resumeListeners.clear();
+        afterResumeCallbacks.clear();
+        activeTokens.clear();
+        pendingReasons.clear();
+      };
+      owner.addCleanup(dispose);
+      return {
+        begin,
+        end,
+        defer,
+        isPaused: () => activeTokens.size > 0,
+        onResume,
+        afterResume,
+        getStats: () => ({ ...stats })
+      };
     });
   }
   function installHomeFeedRequestPriority() {
@@ -6971,7 +7078,15 @@
     appendStyle();
     runtime.addCleanup(() => style.remove());
     const originalMargins = new WeakMap();
-    const stats = { enabled: true, normalizedCount: 0, lastNormalizedCount: 0, normalizedRows: 0 };
+    const stats = {
+      enabled: true,
+      normalizedCount: 0,
+      lastNormalizedCount: 0,
+      normalizedRows: 0,
+      layoutDeferredDuringAutoLoad: 0,
+      layoutResumeRepairs: 0,
+      lastRepairReason: "initial"
+    };
     try {
       Object.defineProperty(window, "__BILIKIT_HOME_LAYOUT_STATS__", { configurable: true, get: () => ({ ...stats }) });
     } catch {
@@ -6983,14 +7098,28 @@
     let pending = false;
     let feedRoot = null;
     let lastSignature = "";
+    let scheduledReason = "initial";
     const CARD_RE = /(?:^|\s)(?:feed-card|floor-single-card|bili-feed-card|bili-video-card|load-more-anchor)(?:\s|$)/;
-    const schedule = () => {
+    const layoutCoordinator = getHomeFeedLayoutCoordinator();
+    const schedule = (reason = "feed-update") => {
+      if (layoutCoordinator?.defer(reason)) {
+        stats.layoutDeferredDuringAutoLoad = layoutCoordinator.getStats().deferredCount;
+        return;
+      }
       if (pending) return;
+      scheduledReason = reason;
       pending = true;
       runtime.frame(apply);
     };
     const apply = () => {
       pending = false;
+      if (layoutCoordinator?.isPaused()) {
+        layoutCoordinator.defer("apply-paused");
+        stats.layoutDeferredDuringAutoLoad = layoutCoordinator.getStats().deferredCount;
+        return;
+      }
+      const repairReason = scheduledReason;
+      scheduledReason = "feed-update";
       const root = feedRoot && feedRoot.isConnected ? feedRoot : document.querySelector(".container.is-version8");
       if (!root) return;
       if (root !== feedRoot) {
@@ -7046,6 +7175,8 @@
       // 签名相同不代表外部代码没有移除我们之前写入的稳定样式；
       // 只有在布局签名和实际修复状态都未变化时才跳过本轮。
       if (signature === lastSignature && !needsRepair) return;
+      stats.lastRepairReason = repairReason;
+      if (repairReason.startsWith("resume:")) stats.layoutResumeRepairs += 1;
       lastSignature = signature;
       let normalizedCount = 0;
       let normalizedRows = 0;
@@ -7071,10 +7202,16 @@
       stats.lastNormalizedCount = normalizedCount;
       stats.normalizedRows = normalizedRows;
     };
-    feedCoordinator?.subscribe(({ root, rootChanged, addedNodes, reason }) => {
+    const unsubscribe = feedCoordinator?.subscribe(({ root, rootChanged, addedNodes, reason }) => {
       if (rootChanged || !feedRoot?.isConnected) feedRoot = root;
-      if (rootChanged || addedNodes.length || reason === "resize") schedule();
+      if (rootChanged || addedNodes.length || reason === "resize") schedule(reason || "feed-update");
     });
+    runtime.addCleanup(unsubscribe);
+    const unsubscribeResume = layoutCoordinator?.onResume(({ reason }) => {
+      stats.layoutDeferredDuringAutoLoad = layoutCoordinator.getStats().deferredCount;
+      schedule(`resume:${reason}`);
+    });
+    runtime.addCleanup(unsubscribeResume);
     runtime.addCleanup(() => {
       for (const element of feedRoot?.querySelectorAll?.(`[${HOME_FEED_LAYOUT_FIX_ATTR}], [${HOME_FEED_LAYOUT_MARGIN_ATTR}]`) || []) {
         element.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
@@ -7083,6 +7220,55 @@
       layoutCleanup();
     });
     schedule();
+  }
+  function installHomeFeedAdHiding(cfg) {
+    if (!isHomePage() || window.__BILIKIT_HOME_AD_HIDING__) return;
+    window.__BILIKIT_HOME_AD_HIDING__ = true;
+    const enabled = cfg?.get?.("hideAds") !== false;
+    const stats = {
+      enabled,
+      selector: ".floor-single-card",
+      detected: 0,
+      hidden: 0,
+      lastScanAt: 0,
+      lastSkipReason: enabled ? "" : "disabled"
+    };
+    try {
+      Object.defineProperty(window, "__BILIKIT_HOME_AD_STATS__", { configurable: true, get: () => ({ ...stats }) });
+    } catch {
+    }
+    if (!enabled) return;
+    const runtime = getRuntimeCoordinator();
+    const style = document.createElement("style");
+    style.dataset.bilikit = "home-ad-hiding";
+    style.textContent = [
+      ".container.is-version8 .floor-single-card{display:none!important}",
+      ".container.is-version8 .feed-card:has(.floor-single-card){display:none!important}"
+    ].join("");
+    const appendStyle = () => {
+      const root = document.head || document.documentElement;
+      if (root && !style.isConnected) root.appendChild(style);
+    };
+    const scan = () => {
+      const slots = [...document.querySelectorAll(".container.is-version8 .floor-single-card")];
+      const hiddenCards = new Set(slots.map((slot) => slot.closest(".feed-card") || slot));
+      stats.detected = slots.length;
+      stats.hidden = hiddenCards.size;
+      stats.lastScanAt = Date.now();
+    };
+    appendStyle();
+    runtime.listen(document, "DOMContentLoaded", appendStyle, { once: true });
+    const feedCoordinator = getHomeFeedCoordinator();
+    const unsubscribe = feedCoordinator?.subscribe((event) => {
+      if (event.rootChanged || event.addedNodes.length) scan();
+    });
+    runtime.addCleanup(unsubscribe);
+    runtime.addCleanup(() => {
+      style.remove();
+      if (window.__BILIKIT_HOME_AD_HIDING__) delete window.__BILIKIT_HOME_AD_HIDING__;
+      if (window.__BILIKIT_HOME_AD_STATS__) delete window.__BILIKIT_HOME_AD_STATS__;
+    });
+    scan();
   }
   function installHomeFeedImagePriority(cfg) {
     if (!isHomePage() || window.__BILIKIT_HOME_FEED_PRIORITY__) return;
@@ -7290,6 +7476,13 @@
       targetRows,
       feedDetected: false,
       triggerCount: 0,
+      batchCount: 0,
+      probeMode: "sync-immediate-restore",
+      visibleProbeCount: 0,
+      layoutDeferred: 0,
+      anchorCorrections: 0,
+      maxAnchorDelta: 0,
+      lastCancelReason: "",
       completedBatches: 0,
       appendedRows: 0,
       lastAppendedRows: 0,
@@ -7309,7 +7502,9 @@
     let feedRoot = null;
     let idleTimer = null;
     let batch = null;
+    let pendingRestoreState = null;
     let lastTrustedScrollAt = 0;
+    const layoutCoordinator = getHomeFeedLayoutCoordinator();
     const getFeedRoot = () => feedRoot?.isConnected ? feedRoot : document.querySelector(".container.is-version8");
     const getCards = (root) => [...root?.children || []].filter((element) => {
       return HOME_FEED_CARD_RE.test(String(element.className || "")) && element.offsetWidth > 0;
@@ -7323,6 +7518,24 @@
       }
       return { cards: cards.length, rows: rows.length };
     };
+    const captureAnchor = (root, scroller) => {
+      const cards = getCards(root);
+      const anchor = cards.find((card) => {
+        const rect = card.getBoundingClientRect();
+        return rect.bottom > 0 && rect.top < window.innerHeight;
+      });
+      if (!anchor) return null;
+      return {
+        element: anchor,
+        top: anchor.getBoundingClientRect().top,
+        scrollTop: scroller.scrollTop || window.scrollY || 0
+      };
+    };
+    const currentScrollTop = (scroller) => Math.max(0, scroller.scrollTop || window.scrollY || 0);
+    const setScrollTop = (scroller, value) => {
+      scroller.scrollTop = value;
+      if (Math.abs((scroller.scrollTop || 0) - value) > 1) window.scrollTo(0, value);
+    };
     const clearIdleTimer = () => {
       idleTimer?.cancel();
       idleTimer = null;
@@ -7331,16 +7544,57 @@
       stats.lastSkipReason = reason;
       stats.lastResult = "skipped";
     };
-    const finishBatch = (result) => {
-      if (!batch) return;
-      batch.timer?.cancel();
+    const restoreAnchor = (state) => {
+      if (!state.anchor || state.interrupted || !state.anchor.element?.isConnected) return;
+      const currentTop = state.anchor.element.getBoundingClientRect().top;
+      const delta = currentTop - state.anchor.top;
+      const absoluteDelta = Math.abs(delta);
+      stats.maxAnchorDelta = Math.max(stats.maxAnchorDelta, absoluteDelta);
+      if (absoluteDelta < 1) return;
+      const scroller = document.scrollingElement || document.documentElement;
+      setScrollTop(scroller, currentScrollTop(scroller) + delta);
+      stats.anchorCorrections += 1;
+    };
+    const completeBatch = (state, result) => {
+      if (batch !== state) return;
+      state.finishTimer?.cancel();
+      state.timer?.cancel();
+      state.verifyFrame?.cancel();
       const current = snapshot(getFeedRoot());
-      const appended = Math.max(0, current.rows - batch.beforeRows);
+      const appended = Math.max(0, current.rows - state.beforeRows);
       stats.lastAppendedRows = appended;
       stats.appendedRows += appended;
       stats.completedBatches += 1;
       stats.lastResult = result;
       batch = null;
+      pendingRestoreState = state;
+      if (state.layoutToken && layoutCoordinator) {
+        layoutCoordinator.afterResume(() => {
+          if (pendingRestoreState === state) pendingRestoreState = null;
+          restoreAnchor(state);
+        });
+        layoutCoordinator.end(state.layoutToken);
+        stats.layoutDeferred = layoutCoordinator.getStats().deferredCount;
+      } else {
+        runtime.frame(() => {
+          if (pendingRestoreState === state) pendingRestoreState = null;
+          restoreAnchor(state);
+        });
+      }
+    };
+    const finishBatch = (state, result) => {
+      if (batch !== state) return;
+      if (state.finishing) return;
+      state.finishing = true;
+      if (state.finishTimer) {
+        state.finishResult = result;
+        return;
+      }
+      state.finishResult = result;
+      state.finishTimer = runtime.timeout(() => {
+        state.finishTimer = null;
+        completeBatch(state, state.finishResult);
+      }, HOME_FEED_AUTO_LOAD_DOM_SETTLE);
     };
     const emitNativeScroll = () => {
       try {
@@ -7349,58 +7603,71 @@
       } catch {
       }
     };
-    const restoreProbePosition = (state) => {
-      if (batch !== state || state.interrupted) return;
-      const scroller = document.scrollingElement || document.documentElement;
-      state.suppressUntil = Date.now() + 250;
-      try {
-        scroller.scrollTop = state.originalTop;
-      } catch {
-        window.scrollTo(0, state.originalTop);
-      }
-    };
     const checkBatch = (state) => {
-      if (batch !== state) return;
+      if (batch !== state || state.finishing) return;
+      if (state.interrupted) {
+        finishBatch(state, "user-interrupted");
+        return;
+      }
       if (isAppFeedActive()) {
         stats.feedDetected = true;
-        finishBatch("feed-detected");
+        finishBatch(state, "feed-detected");
         return;
       }
       const current = snapshot(getFeedRoot());
       const appended = Math.max(0, current.rows - state.beforeRows);
       if (appended >= targetRows) {
-        finishBatch("target-reached");
+        finishBatch(state, "target-reached");
         return;
       }
       if (Date.now() >= state.deadline || state.attempts >= HOME_FEED_AUTO_LOAD_MAX_PROBES) {
-        finishBatch(appended ? "partial" : "no-append");
+        finishBatch(state, appended ? "partial" : "no-append");
         return;
       }
       state.lastRows = current.rows;
       state.timer = runtime.timeout(() => triggerNativeLoad(state), appended > 0 ? HOME_FEED_AUTO_LOAD_RETRY_DELAY : HOME_FEED_AUTO_LOAD_RETRY_DELAY);
     };
     const triggerNativeLoad = (state) => {
-      if (batch !== state) return;
+      if (batch !== state || state.finishing) return;
+      if (state.interrupted) {
+        finishBatch(state, "user-interrupted");
+        return;
+      }
       if (isAppFeedActive()) {
         stats.feedDetected = true;
-        finishBatch("feed-detected");
+        finishBatch(state, "feed-detected");
         return;
       }
       const scroller = document.scrollingElement || document.documentElement;
-      const originalTop = Math.max(0, scroller.scrollTop || window.scrollY || 0);
+      const originalTop = currentScrollTop(scroller);
       const bottomTop = Math.max(0, scroller.scrollHeight - window.innerHeight - 64);
       const probeTop = Math.max(originalTop, bottomTop);
       state.attempts += 1;
       stats.triggerCount += 1;
       state.originalTop = originalTop;
-      state.suppressUntil = Date.now() + 250;
+      state.probeTop = probeTop;
+      state.internalScrollUntil = Date.now() + HOME_FEED_AUTO_LOAD_INTERNAL_SCROLL_GRACE;
       try {
-        if (probeTop > originalTop + 8) scroller.scrollTop = probeTop;
+        if (probeTop > originalTop + 8) setScrollTop(scroller, probeTop);
         emitNativeScroll();
-        if (probeTop > originalTop + 8) runtime.frame(() => restoreProbePosition(state));
+        if (probeTop > originalTop + 8) setScrollTop(scroller, originalTop);
       } catch {
-        emitNativeScroll();
+        try { setScrollTop(scroller, originalTop); } catch {
+        }
+        finishBatch(state, "probe-error");
+        return;
       }
+      state.verifyFrame?.cancel();
+      state.verifyFrame = runtime.frame(() => {
+        if (batch !== state || state.interrupted || probeTop <= originalTop + 8) return;
+        const observedTop = currentScrollTop(scroller);
+        if (Math.abs(observedTop - probeTop) <= 8) {
+          stats.visibleProbeCount += 1;
+          stats.lastCancelReason = "probe-visible";
+          state.interrupted = true;
+          finishBatch(state, "probe-visible");
+        }
+      });
       state.timer = runtime.timeout(() => checkBatch(state), HOME_FEED_AUTO_LOAD_RETRY_DELAY);
     };
     const runBatch = () => {
@@ -7426,16 +7693,26 @@
         skip("content-not-scrollable");
         return;
       }
+      const anchor = captureAnchor(root, scroller);
+      stats.lastCancelReason = "";
       batch = {
         beforeRows: before.rows,
         lastRows: before.rows,
         attempts: 0,
         deadline: Date.now() + HOME_FEED_AUTO_LOAD_TIMEOUT,
-        originalTop: scroller.scrollTop || window.scrollY || 0,
-        suppressUntil: 0,
+        originalTop: currentScrollTop(scroller),
+        anchor,
         interrupted: false,
-        timer: null
+        finishing: false,
+        probeTop: 0,
+        internalScrollUntil: 0,
+        verifyFrame: null,
+        timer: null,
+        finishTimer: null,
+        finishResult: "partial",
+        layoutToken: layoutCoordinator?.begin("auto-load") || null
       };
+      stats.batchCount += 1;
       stats.lastResult = "running";
       triggerNativeLoad(batch);
     };
@@ -7446,10 +7723,22 @@
     };
     const onScroll = (event) => {
       if (event && event.isTrusted === false) return;
-      if (batch && Date.now() < batch.suppressUntil) return;
       lastTrustedScrollAt = Date.now();
+      if (!batch && pendingRestoreState) {
+        pendingRestoreState.interrupted = true;
+        pendingRestoreState = null;
+        stats.lastCancelReason = "user-scroll-after-load";
+      }
       if (batch) {
+        const state = batch;
+        const scroller = document.scrollingElement || document.documentElement;
+        const currentTop = currentScrollTop(scroller);
+        const internal = Date.now() <= state.internalScrollUntil
+          && (Math.abs(currentTop - state.originalTop) <= 8 || Math.abs(currentTop - state.probeTop) <= 8);
+        if (internal) return;
         batch.interrupted = true;
+        stats.lastCancelReason = "user-scroll";
+        finishBatch(batch, "user-interrupted");
         return;
       }
       scheduleIdle();
@@ -7460,25 +7749,36 @@
     });
     const unsubscribe = feedCoordinator?.subscribe((event) => {
       feedRoot = event.root || feedRoot;
+      if (layoutCoordinator) stats.layoutDeferred = layoutCoordinator.getStats().deferredCount;
       if (!batch || !event.addedNodes.length) return;
       const current = snapshot(feedRoot);
-      if (current.rows - batch.beforeRows >= targetRows) finishBatch("target-reached");
+      if (current.rows - batch.beforeRows >= targetRows) finishBatch(batch, "target-reached");
     });
     runtime.addCleanup(unsubscribe);
     runtime.addCleanup(() => {
       clearIdleTimer();
       if (batch?.timer) batch.timer.cancel();
+      if (batch?.finishTimer) batch.finishTimer.cancel();
+      if (batch?.layoutToken && layoutCoordinator) layoutCoordinator.end(batch.layoutToken);
       batch = null;
+      pendingRestoreState = null;
       if (window.__BILIKIT_HOME_AUTO_LOAD__) delete window.__BILIKIT_HOME_AUTO_LOAD__;
     });
   }
   const homeFeedLoad = {
     id: "home-feed-load",
     name: "首页加载",
-    description: "控制首页封面预加载，以及原生首页在停止滚动后的有限自动加载",
+    description: "控制首页广告位、封面预加载，以及原生首页在停止滚动后的有限自动加载",
     category: "推荐",
     runAt: "start",
     settings: [
+      {
+        key: "hideAds",
+        type: "toggle",
+        label: "隐藏首页广告位",
+        default: true,
+        hint: "隐藏首页信息流中的广告楼层，不影响普通视频卡片和视频悬停预览"
+      },
       {
         key: "preloadRows",
         type: "number",
@@ -7508,6 +7808,7 @@
       }
     ],
     init: (cfg) => {
+      installHomeFeedAdHiding(cfg);
       installHomeFeedImagePriority(cfg);
       installHomeFeedAutoLoad(cfg);
     }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.6.2
+// @version      0.6.4
 // @author       shiinayane
 // @description  B 站性能优化：优化信息流图片 CDN、加载调度和布局稳定性，同时保留原生预览行为。
 // @license      MIT
@@ -2125,7 +2125,7 @@
       }
     })();
   }
-  const VERSION = "0.6.2";
+  const VERSION = "0.6.4";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -2199,7 +2199,7 @@
   let detailEl = null;
   let footEl = null;
   const STYLE = `
-:host { all: initial; color-scheme: dark; }
+:host { all: initial; color-scheme: light dark; }
 * { box-sizing: border-box; font-family: -apple-system, "PingFang SC", sans-serif; }
 
 .gear {
@@ -2267,12 +2267,13 @@
 .field .toggle-head .flabel { flex: 1; }
 .field .flabel { font-size: 14px; color: rgba(255,255,255,.8); line-height: 1.4; }
 .field .hint { font-size: 13px; color: rgba(255,255,255,.4); line-height: 1.45; }
-.field input[type=text], .field textarea, .field select {
+.field input[type=text], .field input[type=number], .field textarea, .field select {
   width: 100%; background: rgba(255,255,255,.06); color: #e3e5e7;
   border: 1px solid rgba(255,255,255,.14); border-radius: 9px; padding: 9px 12px;
   font-size: 14px; font-family: inherit; outline: none;
 }
-.field input[type=text]:focus, .field textarea:focus, .field select:focus { border-color: #fb7299; }
+.field input[type=text], .field input[type=number], .field select { min-height: 38px; }
+.field input[type=text]:focus, .field input[type=number]:focus, .field textarea:focus, .field select:focus { border-color: #fb7299; }
 .field textarea { min-height: 72px; resize: vertical; line-height: 1.5; }
 
 .empty { margin: auto; text-align: center; color: rgba(255,255,255,.3); font-size: 14px; padding: 24px; }
@@ -2315,6 +2316,7 @@
 .foot.dirty .note { color: #fb7299; }
 
 @media (prefers-color-scheme: light) {
+  :host { color-scheme: light; }
   .gear { background: rgba(255,255,255,.95); color: #18191c; border-color: rgba(0,0,0,.08); box-shadow: 0 3px 14px rgba(0,0,0,.14); }
   .card { background: #fff; color: #18191c; box-shadow: 0 16px 56px rgba(0,0,0,.22); }
   .head { border-bottom-color: rgba(0,0,0,.07); }
@@ -2331,8 +2333,8 @@
   .detail-desc { color: rgba(0,0,0,.5); }
   .field .flabel { color: rgba(0,0,0,.75); }
   .field .hint { color: rgba(0,0,0,.42); }
-  .field input[type=text], .field textarea, .field select { background: rgba(0,0,0,.04); color: #18191c; border-color: rgba(0,0,0,.14); }
-  .field input[type=text]:focus, .field textarea:focus, .field select:focus { border-color: #d6336c; }
+  .field input[type=text], .field input[type=number], .field textarea, .field select { background: rgba(0,0,0,.04); color: #18191c; border-color: rgba(0,0,0,.14); }
+  .field input[type=text]:focus, .field input[type=number]:focus, .field textarea:focus, .field select:focus { border-color: #d6336c; }
   .empty { color: rgba(0,0,0,.35); }
   .sw .track { background: rgba(0,0,0,.16); }
   .sw input:checked + .track { background: #d6336c; }
@@ -2377,6 +2379,17 @@
     inp.addEventListener("change", () => onChange(inp.checked));
     sw.append(inp, track);
     return sw;
+  }
+  function normalizeNumberField(value, f) {
+    const fallback = Number(f.default);
+    const min = Number.isFinite(Number(f.min)) ? Number(f.min) : -Infinity;
+    const max = Number.isFinite(Number(f.max)) ? Number(f.max) : Infinity;
+    const step = Number.isFinite(Number(f.step)) && Number(f.step) > 0 ? Number(f.step) : 1;
+    const raw = Number(value);
+    const base = Number.isFinite(raw) ? raw : fallback;
+    const stepped = Math.round(base / step) * step;
+    const bounded = Math.min(max, Math.max(min, stepped));
+    return Number.isFinite(bounded) ? bounded : fallback;
   }
   function renderField(m, f) {
     const wrap = el("div");
@@ -2441,6 +2454,29 @@
       });
       wrap.appendChild(sel);
       if (input) wrap.appendChild(input);
+    } else if (f.type === "number") {
+      wrap.className = "field";
+      wrap.appendChild(el("span", "flabel", f.label));
+      const inp = document.createElement("input");
+      inp.type = "number";
+      inp.inputMode = "numeric";
+      if (f.min != null) inp.min = String(f.min);
+      if (f.max != null) inp.max = String(f.max);
+      if (f.step != null) inp.step = String(f.step);
+      inp.value = String(normalizeNumberField(cur, f));
+      if (f.placeholder) inp.placeholder = f.placeholder;
+      let committed = inp.value;
+      const commit = () => {
+        const value = normalizeNumberField(inp.value, f);
+        inp.value = String(value);
+        if (committed === inp.value) return;
+        committed = inp.value;
+        setField(m.id, f.key, value);
+        markDirty();
+      };
+      inp.addEventListener("change", commit);
+      inp.addEventListener("blur", commit);
+      wrap.appendChild(inp);
     } else if (f.type === "textarea") {
       wrap.className = "field";
       wrap.appendChild(el("span", "flabel", f.label));
@@ -5961,12 +5997,38 @@
   const HOME_IMAGE_CACHE_KEY = "bilikit:home-image-cdn:v4";
   const HOME_IMAGE_CACHE_FALLBACK_KEYS = [];
   const HOME_IMAGE_CACHE_TTL = 15 * 60 * 1e3;
-  const HOME_FEED_PRELOAD_ROWS = 2;
+  const HOME_FEED_PRELOAD_ROWS_DEFAULT = 6;
+  const HOME_FEED_PRELOAD_ROWS_MIN = 4;
+  const HOME_FEED_PRELOAD_ROWS_MAX = 10;
+  const HOME_FEED_AUTO_LOAD_DELAY = 3e3;
+  const HOME_FEED_AUTO_LOAD_ROWS_DEFAULT = 10;
+  const HOME_FEED_AUTO_LOAD_ROWS_MIN = 5;
+  const HOME_FEED_AUTO_LOAD_ROWS_MAX = 15;
   const HOME_FEED_PRELOAD_MIN = 420;
-  const HOME_FEED_PRELOAD_MAX = 720;
-  const HOME_FEED_PRELOAD_BATCH = 10;
+  const HOME_FEED_PRELOAD_MAX = 2600;
+  const HOME_FEED_PRELOAD_BATCH_MIN = 12;
+  const HOME_FEED_PRELOAD_BATCH_MAX = 36;
+  const HOME_FEED_AUTO_LOAD_MAX_PROBES = 3;
+  const HOME_FEED_AUTO_LOAD_TIMEOUT = 8e3;
+  const HOME_FEED_AUTO_LOAD_RETRY_DELAY = 800;
+  const HOME_FEED_CARD_RE = /(?:^|\s)(?:feed-card|floor-single-card|bili-feed-card|bili-video-card)(?:\s|$)/;
+  const HOME_FEED_CARD_SELECTOR = ".feed-card, .floor-single-card, .bili-feed-card, .bili-video-card";
+  const HOME_FEED_FEED_HEARTBEAT_TTL = 15e3;
   const HOME_FEED_LAYOUT_FIX_ATTR = "data-bk-feed-layout";
   const HOME_FEED_LAYOUT_MARGIN_ATTR = "data-bk-feed-layout-margin";
+  function clampHomeFeedNumber(value, min, max, fallback) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(number)));
+  }
+  function isAppFeedActive() {
+    let alive = 0;
+    try {
+      alive = Number(localStorage.getItem("bilikit:alive.feed") || 0);
+    } catch {
+    }
+    return Date.now() - alive < HOME_FEED_FEED_HEARTBEAT_TTL || !!document.querySelector(".bk-feed-fab");
+  }
   const PC_WINDOW = 12e3;
   let lastPc = -Infinity;
   function getRuntimeCoordinator() {
@@ -7022,16 +7084,23 @@
     });
     schedule();
   }
-  function installHomeFeedImagePriority() {
+  function installHomeFeedImagePriority(cfg) {
     if (!isHomePage() || window.__BILIKIT_HOME_FEED_PRIORITY__) return;
     if (typeof IntersectionObserver !== "function") return;
     window.__BILIKIT_HOME_FEED_PRIORITY__ = true;
+    const preloadRows = clampHomeFeedNumber(
+      cfg?.get?.("preloadRows"),
+      HOME_FEED_PRELOAD_ROWS_MIN,
+      HOME_FEED_PRELOAD_ROWS_MAX,
+      HOME_FEED_PRELOAD_ROWS_DEFAULT
+    );
     const runtime = getRuntimeCoordinator();
     const feedCoordinator = getHomeFeedCoordinator();
     const stats = {
       enabled: true,
-      preloadRows: HOME_FEED_PRELOAD_ROWS,
+      preloadRows,
       preloadDistance: 0,
+      preloadBatchLimit: 0,
       observedImages: 0,
       preloadedImages: 0,
       highPriorityImages: 0,
@@ -7047,26 +7116,73 @@
     let preloadDistance = 0;
     let observed = new WeakMap();
     const promoted = new WeakMap();
+    const preloadQueue = [];
+    let idleHandle = 0;
+    let idleKind = "";
     let preloadWindowTop = NaN;
     let preloadWindowCount = 0;
     const getFeedRoot = () => document.querySelector(".container.is-version8");
+    const getCardElements = (root) => [...root?.children || []].filter((element) => {
+      return HOME_FEED_CARD_RE.test(String(element.className || "")) && element.offsetWidth > 0;
+    });
+    const getColumnCount = (root) => {
+      const cards = getCardElements(root);
+      if (!cards.length) return 4;
+      const top = cards[0].getBoundingClientRect().top;
+      return Math.max(1, cards.filter((element) => Math.abs(element.getBoundingClientRect().top - top) < 8).length);
+    };
     const getPreloadDistance = (root) => {
       const grid = getComputedStyle(root);
       const gap = Number.parseFloat(grid.rowGap || grid.gap) || 20;
-      const sample = [...root.children].find((element) => {
-        return element.offsetWidth > 0 && /feed-card|floor-single-card|bili-feed-card|bili-video-card/.test(String(element.className));
-      });
+      const sample = getCardElements(root)[0];
       const height = sample ? sample.getBoundingClientRect().height : 207;
-      return Math.round(Math.min(HOME_FEED_PRELOAD_MAX, Math.max(HOME_FEED_PRELOAD_MIN, (height + gap) * HOME_FEED_PRELOAD_ROWS)));
+      return Math.round(Math.min(HOME_FEED_PRELOAD_MAX, Math.max(HOME_FEED_PRELOAD_MIN, (height + gap) * preloadRows)));
+    };
+    const getPreloadBatchLimit = (root) => {
+      return Math.min(HOME_FEED_PRELOAD_BATCH_MAX, Math.max(HOME_FEED_PRELOAD_BATCH_MIN, getColumnCount(root) * preloadRows));
     };
     const inHomeFeed = (img) => {
       const root = img.closest(".container.is-version8");
       if (!root || img.closest(".recommended-swipe")) return false;
       if (img.closest("video, [class*='preview'], [class*='Preview'], [class*='hover-video'], [class*='HoverVideo'], [class*='image--hover']")) return false;
-      const card = img.closest(".feed-card, .floor-single-card, .bili-feed-card, .bili-video-card");
+      const card = img.closest(HOME_FEED_CARD_SELECTOR);
       if (!card || card.querySelector("video")) return false;
       const images = [...card.querySelectorAll("img")];
       return images.length <= 1 || img === images[0];
+    };
+    const cancelIdle = () => {
+      if (!idleHandle) return;
+      if (idleKind === "ric" && typeof cancelIdleCallback === "function") cancelIdleCallback(idleHandle);
+      else clearTimeout(idleHandle);
+      idleHandle = 0;
+      idleKind = "";
+    };
+    const drainQueue = () => {
+      idleHandle = 0;
+      idleKind = "";
+      let budget = 4;
+      while (preloadQueue.length && budget-- > 0) {
+        const item = preloadQueue.shift();
+        const img = item?.img;
+        if (!(img instanceof HTMLImageElement) || !img.isConnected || img.complete && img.naturalWidth > 0) continue;
+        try {
+          img.fetchPriority = "low";
+          if (img.loading === "lazy") img.loading = "eager";
+          stats.preloadedImages += 1;
+        } catch {
+        }
+      }
+      if (preloadQueue.length) scheduleIdleDrain();
+    };
+    const scheduleIdleDrain = () => {
+      if (idleHandle) return;
+      if (typeof requestIdleCallback === "function") {
+        idleKind = "ric";
+        idleHandle = requestIdleCallback(drainQueue, { timeout: 1200 });
+      } else {
+        idleKind = "timeout";
+        idleHandle = setTimeout(drainQueue, 180);
+      }
     };
     const watch = (img) => {
       if (!(img instanceof HTMLImageElement) || !inHomeFeed(img)) return;
@@ -7091,29 +7207,34 @@
         preloadWindowTop = scrollTop;
         preloadWindowCount = 0;
       }
-      // 只允许一个视口窗口内的一小批图片进入 eager，避免刷新时图片
-      // 抢占信息流接口和 B 站自身后续卡片请求；滚动一段距离后重新给预算。
-      if (needsLoad && preloadWindowCount >= HOME_FEED_PRELOAD_BATCH) return false;
+      const batchLimit = getPreloadBatchLimit(feedRoot);
+      stats.preloadBatchLimit = batchLimit;
+      if (needsLoad && preloadWindowCount >= batchLimit) return false;
       promoted.set(img, source);
+      const inViewport = bounds.bottom > 0 && bounds.top < window.innerHeight
+        && bounds.right > 0 && bounds.left < window.innerWidth;
       try {
-        const inViewport = bounds.bottom > 0 && bounds.top < window.innerHeight
-          && bounds.right > 0 && bounds.left < window.innerWidth;
-        img.fetchPriority = inViewport ? "high" : "auto";
+        img.fetchPriority = inViewport ? "high" : "low";
         if (inViewport) stats.highPriorityImages += 1;
       } catch {
       }
       if (needsLoad) {
-        try {
-          if (img.loading === "lazy") img.loading = "eager";
-          preloadWindowCount += 1;
-          stats.preloadedImages += 1;
-        } catch {
+        preloadWindowCount += 1;
+        if (inViewport) {
+          try {
+            if (img.loading === "lazy") img.loading = "eager";
+            stats.preloadedImages += 1;
+          } catch {
+          }
+        } else {
+          preloadQueue.push({ img, source });
+          scheduleIdleDrain();
         }
       }
       return true;
     };
     const rebuildObserver = (requestedRoot) => {
-        const root = requestedRoot?.isConnected ? requestedRoot : getFeedRoot();
+      const root = requestedRoot?.isConnected ? requestedRoot : getFeedRoot();
       if (!root) return false;
       const distance = getPreloadDistance(root);
       if (observer && root === feedRoot && Math.abs(distance - preloadDistance) < 24) return false;
@@ -7144,12 +7265,253 @@
         if (resource instanceof HTMLImageElement) watch(resource);
       }
     };
-    feedCoordinator?.subscribe(processFeedUpdate);
+    const unsubscribe = feedCoordinator?.subscribe(processFeedUpdate);
+    runtime.addCleanup(unsubscribe);
     runtime.addCleanup(() => {
+      cancelIdle();
+      preloadQueue.length = 0;
       observer?.disconnect();
       if (window.__BILIKIT_HOME_FEED_PRIORITY__) delete window.__BILIKIT_HOME_FEED_PRIORITY__;
     });
   }
+  function installHomeFeedAutoLoad(cfg) {
+    if (!isHomePage() || window.__BILIKIT_HOME_AUTO_LOAD__) return;
+    window.__BILIKIT_HOME_AUTO_LOAD__ = true;
+    const enabled = cfg?.get?.("autoLoad") !== false;
+    const targetRows = clampHomeFeedNumber(
+      cfg?.get?.("autoLoadRows"),
+      HOME_FEED_AUTO_LOAD_ROWS_MIN,
+      HOME_FEED_AUTO_LOAD_ROWS_MAX,
+      HOME_FEED_AUTO_LOAD_ROWS_DEFAULT
+    );
+    const stats = {
+      enabled,
+      delayMs: HOME_FEED_AUTO_LOAD_DELAY,
+      targetRows,
+      feedDetected: false,
+      triggerCount: 0,
+      completedBatches: 0,
+      appendedRows: 0,
+      lastAppendedRows: 0,
+      lastResult: "idle",
+      lastSkipReason: ""
+    };
+    try {
+      Object.defineProperty(window, "__BILIKIT_HOME_AUTO_LOAD_STATS__", { configurable: true, get: () => ({ ...stats }) });
+    } catch {
+    }
+    const runtime = getRuntimeCoordinator();
+    const feedCoordinator = getHomeFeedCoordinator();
+    if (!enabled) {
+      stats.lastSkipReason = "disabled";
+      return;
+    }
+    let feedRoot = null;
+    let idleTimer = null;
+    let batch = null;
+    let lastTrustedScrollAt = 0;
+    const getFeedRoot = () => feedRoot?.isConnected ? feedRoot : document.querySelector(".container.is-version8");
+    const getCards = (root) => [...root?.children || []].filter((element) => {
+      return HOME_FEED_CARD_RE.test(String(element.className || "")) && element.offsetWidth > 0;
+    });
+    const snapshot = (root) => {
+      const cards = getCards(root);
+      const rows = [];
+      for (const card of cards) {
+        const top = Math.round(card.getBoundingClientRect().top);
+        if (!rows.some((value) => Math.abs(value - top) < 8)) rows.push(top);
+      }
+      return { cards: cards.length, rows: rows.length };
+    };
+    const clearIdleTimer = () => {
+      idleTimer?.cancel();
+      idleTimer = null;
+    };
+    const skip = (reason) => {
+      stats.lastSkipReason = reason;
+      stats.lastResult = "skipped";
+    };
+    const finishBatch = (result) => {
+      if (!batch) return;
+      batch.timer?.cancel();
+      const current = snapshot(getFeedRoot());
+      const appended = Math.max(0, current.rows - batch.beforeRows);
+      stats.lastAppendedRows = appended;
+      stats.appendedRows += appended;
+      stats.completedBatches += 1;
+      stats.lastResult = result;
+      batch = null;
+    };
+    const emitNativeScroll = () => {
+      try {
+        window.dispatchEvent(new Event("scroll"));
+        document.dispatchEvent(new Event("scroll"));
+      } catch {
+      }
+    };
+    const restoreProbePosition = (state) => {
+      if (batch !== state || state.interrupted) return;
+      const scroller = document.scrollingElement || document.documentElement;
+      state.suppressUntil = Date.now() + 250;
+      try {
+        scroller.scrollTop = state.originalTop;
+      } catch {
+        window.scrollTo(0, state.originalTop);
+      }
+    };
+    const checkBatch = (state) => {
+      if (batch !== state) return;
+      if (isAppFeedActive()) {
+        stats.feedDetected = true;
+        finishBatch("feed-detected");
+        return;
+      }
+      const current = snapshot(getFeedRoot());
+      const appended = Math.max(0, current.rows - state.beforeRows);
+      if (appended >= targetRows) {
+        finishBatch("target-reached");
+        return;
+      }
+      if (Date.now() >= state.deadline || state.attempts >= HOME_FEED_AUTO_LOAD_MAX_PROBES) {
+        finishBatch(appended ? "partial" : "no-append");
+        return;
+      }
+      state.lastRows = current.rows;
+      state.timer = runtime.timeout(() => triggerNativeLoad(state), appended > 0 ? HOME_FEED_AUTO_LOAD_RETRY_DELAY : HOME_FEED_AUTO_LOAD_RETRY_DELAY);
+    };
+    const triggerNativeLoad = (state) => {
+      if (batch !== state) return;
+      if (isAppFeedActive()) {
+        stats.feedDetected = true;
+        finishBatch("feed-detected");
+        return;
+      }
+      const scroller = document.scrollingElement || document.documentElement;
+      const originalTop = Math.max(0, scroller.scrollTop || window.scrollY || 0);
+      const bottomTop = Math.max(0, scroller.scrollHeight - window.innerHeight - 64);
+      const probeTop = Math.max(originalTop, bottomTop);
+      state.attempts += 1;
+      stats.triggerCount += 1;
+      state.originalTop = originalTop;
+      state.suppressUntil = Date.now() + 250;
+      try {
+        if (probeTop > originalTop + 8) scroller.scrollTop = probeTop;
+        emitNativeScroll();
+        if (probeTop > originalTop + 8) runtime.frame(() => restoreProbePosition(state));
+      } catch {
+        emitNativeScroll();
+      }
+      state.timer = runtime.timeout(() => checkBatch(state), HOME_FEED_AUTO_LOAD_RETRY_DELAY);
+    };
+    const runBatch = () => {
+      idleTimer = null;
+      if (batch || !enabled || document.visibilityState !== "visible") {
+        if (!batch && document.visibilityState !== "visible") skip("page-hidden");
+        return;
+      }
+      if (isAppFeedActive()) {
+        stats.feedDetected = true;
+        skip("feed-active");
+        return;
+      }
+      if (Date.now() - lastTrustedScrollAt < HOME_FEED_AUTO_LOAD_DELAY - 100) return;
+      const root = getFeedRoot();
+      const before = snapshot(root);
+      if (!root || before.cards === 0) {
+        skip("feed-root-unavailable");
+        return;
+      }
+      const scroller = document.scrollingElement || document.documentElement;
+      if (scroller.scrollHeight <= window.innerHeight + 160) {
+        skip("content-not-scrollable");
+        return;
+      }
+      batch = {
+        beforeRows: before.rows,
+        lastRows: before.rows,
+        attempts: 0,
+        deadline: Date.now() + HOME_FEED_AUTO_LOAD_TIMEOUT,
+        originalTop: scroller.scrollTop || window.scrollY || 0,
+        suppressUntil: 0,
+        interrupted: false,
+        timer: null
+      };
+      stats.lastResult = "running";
+      triggerNativeLoad(batch);
+    };
+    const scheduleIdle = () => {
+      clearIdleTimer();
+      if (!enabled || batch || isAppFeedActive() || document.visibilityState !== "visible") return;
+      idleTimer = runtime.timeout(runBatch, HOME_FEED_AUTO_LOAD_DELAY);
+    };
+    const onScroll = (event) => {
+      if (event && event.isTrusted === false) return;
+      if (batch && Date.now() < batch.suppressUntil) return;
+      lastTrustedScrollAt = Date.now();
+      if (batch) {
+        batch.interrupted = true;
+        return;
+      }
+      scheduleIdle();
+    };
+    runtime.listen(window, "scroll", onScroll, { passive: true });
+    runtime.listen(document, "visibilitychange", () => {
+      if (document.visibilityState !== "visible") clearIdleTimer();
+    });
+    const unsubscribe = feedCoordinator?.subscribe((event) => {
+      feedRoot = event.root || feedRoot;
+      if (!batch || !event.addedNodes.length) return;
+      const current = snapshot(feedRoot);
+      if (current.rows - batch.beforeRows >= targetRows) finishBatch("target-reached");
+    });
+    runtime.addCleanup(unsubscribe);
+    runtime.addCleanup(() => {
+      clearIdleTimer();
+      if (batch?.timer) batch.timer.cancel();
+      batch = null;
+      if (window.__BILIKIT_HOME_AUTO_LOAD__) delete window.__BILIKIT_HOME_AUTO_LOAD__;
+    });
+  }
+  const homeFeedLoad = {
+    id: "home-feed-load",
+    name: "首页加载",
+    description: "控制首页封面预加载，以及原生首页在停止滚动后的有限自动加载",
+    category: "推荐",
+    runAt: "start",
+    settings: [
+      {
+        key: "preloadRows",
+        type: "number",
+        label: "首页封面预加载行数",
+        default: HOME_FEED_PRELOAD_ROWS_DEFAULT,
+        min: HOME_FEED_PRELOAD_ROWS_MIN,
+        max: HOME_FEED_PRELOAD_ROWS_MAX,
+        step: 1,
+        hint: "默认 6 行，可设置 4–10 行；只预加载封面，不处理视频悬停预览"
+      },
+      {
+        key: "autoLoad",
+        type: "toggle",
+        label: "停止滚动后自动加载",
+        default: true,
+        hint: "停止滚动约 3 秒后触发一批原生首页加载；检测到 BiliKit Feed 时自动停用"
+      },
+      {
+        key: "autoLoadRows",
+        type: "number",
+        label: "自动加载行数",
+        default: HOME_FEED_AUTO_LOAD_ROWS_DEFAULT,
+        min: HOME_FEED_AUTO_LOAD_ROWS_MIN,
+        max: HOME_FEED_AUTO_LOAD_ROWS_MAX,
+        step: 1,
+        hint: "每次停止滚动最多加载 5–15 行，默认 10 行"
+      }
+    ],
+    init: (cfg) => {
+      installHomeFeedImagePriority(cfg);
+      installHomeFeedAutoLoad(cfg);
+    }
+  };
   function isVideoUrl(u) {
     try {
       const url = new URL(u, location.href);
@@ -7613,6 +7975,7 @@
   suspendDrawerMedia(false);
   register(
     cdnPick,
+    homeFeedLoad,
     themeSync,
     commentLocation,
     wakeLock,
@@ -7625,7 +7988,6 @@
   installHomePreconnect();
   installHomeImageCdn();
   installHomeFeedLayoutStability();
-  installHomeFeedImagePriority();
   runAll();
   installSiteDrawer();
   mountPanel();

@@ -1,7 +1,7 @@
 {
   "name": "bilikit-performance-build",
   "private": true,
-  "version": "0.6.20",
+  "version": "0.6.21",
   "description": "Builds and embeds the on-demand BiliKit DASH remux worker",
   "scripts": {
     "build:remux-worker": "node scripts/build-remux-worker.mjs",

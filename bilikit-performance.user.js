@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.6.20
+// @version      0.6.21
 // @author       shiinayane
 // @description  B 站性能优化：优化信息流图片 CDN、加载调度和布局稳定性，同时保留原生预览行为。
 // @license      MIT
@@ -2176,7 +2176,7 @@
       }
     })();
   }
-  const VERSION = "0.6.20";
+  const VERSION = "0.6.21";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -9035,6 +9035,13 @@
       .replace(/^_+|_+$/g, "");
     return Array.from(cleaned).slice(0, maxLength).join("") || "bilibili_video";
   }
+  function downloadFilenameTitle(model) {
+    const raw = String(model?.title || "");
+    const page = Math.max(1, Math.floor(Number(model?.page) || 1));
+    if (!raw) return cleanDownloadName(raw);
+    const pagePrefix = new RegExp(`^(?:P\\s*0*${page}|第\\s*0*${page}\\s*[P集期])(?=\\s|[_\\-:：]|$)[\\s_\\-:：]*`, "i");
+    return cleanDownloadName(raw.replace(pagePrefix, ""));
+  }
   function downloadFilenameIdentity(model) {
     const bvid = String(model?.bvid || model?.videoId || "").match(/^BV([0-9A-Za-z]+)$/i);
     if (bvid) return `BV${bvid[1]}`;
@@ -9064,7 +9071,7 @@
   }
   function buildDownloadFileName(model, kind, video = null, audio = null) {
     const parts = [
-      cleanDownloadName(model?.title),
+      downloadFilenameTitle(model),
       downloadFilenameIdentity(model || {}),
       downloadFilenamePage(model || {})
     ];

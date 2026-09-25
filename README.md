@@ -2,7 +2,7 @@
 
 面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用，并在播放器右键菜单中提供当前视频下载工作台。
 
-当前版本：**0.6.20**
+当前版本：**0.6.21**
 
 脚本文件：[bilikit-performance.user.js](bilikit-performance.user.js)
 
@@ -59,6 +59,7 @@ CDN 处理分为图片和播放资源两条路径：
 - 优先复用当前页面最近的合法 WBI playurl 请求；签名过期时在同一次主动获取中构造新的 WBI 请求。请求只执行一次，失败后由“重新获取轨道”按钮触发重试。
 - 支持“合并 MP4”“分别下载音视频轨”和“仅下载音频”。合并使用 Mediabunny 编码包直通重封装，不重新编码；MP4 索引前置，支持 seek。
 - 下载文件名统一使用下划线格式，不使用空格、连字符或加号：合并示例为 `标题_BVxxxx_P01_1080P_AVC_AAC_video_audio.mp4`，视频分轨为 `标题_BVxxxx_P01_1080P_AVC_video.mp4`，音频分轨为 `标题_BVxxxx_P01_AAC_192kbps_audio.m4a`。合并 Blob 使用浏览器原生文件名保存，避免 Edge/Tampermonkey 将 Blob URL 回退为 UUID；分轨下载继续使用下载管理器。仅下载音频时按返回的 MIME 和容器命名：B 站常见的 `audio/mp4` 使用 `.m4a`，原始 FLAC、Ogg/Opus、MP3 等才使用对应扩展名；不会再把音频轨命名为视频用的 `.mp4`。
+- 如果 B 站页面标题已经带有当前分 P 前缀（例如 `P2_标题` 或 `P 02 - 标题`），文件名会去掉这个重复前缀，只保留统一的 `_P02` 标识。
 - 免登录模式下 B 站可能隐藏全局 `__playinfo__`；工作台从当前播放接口响应建立内存快照，并要求请求/响应身份与当前 BVID、CID、路由一致。没有请求身份的全局 `__playinfo__` 只有在页面已确认 CID 且时长一致时才可回退使用；当前播放器时长尚未匹配时会等待。无法确认身份的旧响应会被丢弃，不会借用当前页面标题给它重新贴标签。
 - 分轨使用页面下发的原始签名地址；快照在 CDN 改写前复制，并绑定当前 BVID、CID、P 和路由。合并通过 Tampermonkey 请求 API 读取轨道。签名地址不展示、不写入存储或任务记录；任务只在当前页面内存中。
 - 下载前会验证轨道资源总长度；合并前还会核对视频轨、音频轨与当前视频时长。遇到部分响应、长度不符或时长不符时任务会失败，不生成错误 MP4；CDN 不提供可验证长度时也会停止下载。
@@ -109,7 +110,7 @@ CDN 优选可以进一步设置：
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或其他兼容的 userscript 管理器。
 2. 从 [Raw 地址安装或更新](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)。
-3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.6.20`。
+3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.6.21`。
 
 本项目使用新的脚本名称和 namespace，是独立于旧版 BiliKit Core 的新脚本身份。旧版不会自动升级到本仓库；安装前请先停用旧版，避免两个脚本同时 hook 请求、重复修改页面或产生不稳定行为。
 

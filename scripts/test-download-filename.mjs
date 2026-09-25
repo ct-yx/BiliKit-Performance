@@ -56,4 +56,14 @@ const avName = buildDownloadFileName({ title: "AV 测试", videoId: "av123456", 
 });
 if (!avName.includes("AV123456_P02_FLAC_audio.flac")) throw new Error(`AV/FLAC 文件名错误：${avName}`);
 
+const pagePrefixed = buildDownloadFileName({ title: "P2_哔哩哔哩_bilibili", bvid: "BV1j2YC6iE4i", page: 2 }, "merge", video, audio);
+if (pagePrefixed !== "哔哩哔哩_bilibili_BV1j2YC6iE4i_P02_1080P_AVC_AAC_video_audio.mp4") {
+  throw new Error(`分 P 标题前缀未清理：${pagePrefixed}`);
+}
+
+const pagePrefixedWithSpace = buildDownloadFileName({ title: "P 02 - 测试视频", bvid: "BV1j2YC6iE4i", page: 2 }, "video", video, null);
+if (pagePrefixedWithSpace !== "测试视频_BV1j2YC6iE4i_P02_1080P_AVC_video.mp4") {
+  throw new Error(`带空格的分 P 标题前缀未清理：${pagePrefixedWithSpace}`);
+}
+
 console.log("下载文件名测试通过：统一下划线格式、轨道标签、分 P、编码和真实扩展名。");

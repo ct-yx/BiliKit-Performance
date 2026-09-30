@@ -139,6 +139,10 @@
       downloadScope: String(source.downloadScope || "episodes"),
       seasonId: String(source.seasonId || "").match(/^\d+$/)?.[0] || "",
       epId: String(source.epId || "").match(/^\d+$/)?.[0] || "",
+      seasonIndex: Math.max(0, Math.floor(Number(source.seasonIndex) || 0)),
+      seasonLabel: normalizeDownloadTitle(source.seasonLabel),
+      seasonTitle: normalizeDownloadTitle(source.seasonTitle),
+      multiSeason: !!source.multiSeason,
       episodeIndex: Math.max(0, Math.floor(Number(source.episodeIndex) || 0)),
       quality: Number(source.quality) || 0,
       duration: Math.max(0, Number(source.duration) || 0),
@@ -342,6 +346,52 @@
       });
     }
     return entries.sort((left, right) => left.page - right.page);
+  }
+  function readDownloadBangumiSeasonTabs(basePage = currentDownloadPageIdentity()) {
+    if (basePage?.downloadScope !== "bangumi") return [];
+    const tabs = [];
+    const seen = new Set();
+    const addTab = (button, wrapper, fallbackIndex) => {
+      const seasonId = String(button?.getAttribute?.("data-item-id") || "").match(/^\d+$/)?.[0] || "";
+      if (!seasonId || seen.has(seasonId)) return;
+      const seasonLabel = normalizeDownloadTitle(button?.textContent || button?.innerText) || `第${fallbackIndex}季`;
+      const activeId = String(wrapper?.getAttribute?.("data-active-id") || "");
+      const active = activeId === seasonId || !!button?.classList?.contains?.("SectionTabs_active__cms8S") || seasonId === String(basePage?.seasonId || "");
+      seen.add(seasonId);
+      tabs.push({
+        seasonIndex: tabs.length + 1,
+        seasonId,
+        seasonLabel,
+        seasonTitle: seasonLabel,
+        current: active,
+        source: "dom"
+      });
+    };
+    try {
+      const sections = [...document.querySelectorAll("section")];
+      for (const section of sections) {
+        const heading = normalizeDownloadTitle(section.querySelector?.("h3")?.textContent || "");
+        const wrappers = [...(section.querySelectorAll?.("[data-active-id]") || [])];
+        const wrapper = wrappers.find((node) => node.querySelectorAll?.("button[data-item-id]")?.length) || section;
+        const buttons = [...(wrapper.querySelectorAll?.("button[data-item-id]") || [])];
+        if (!buttons.length || heading && !/正片/.test(heading)) continue;
+        buttons.forEach((button) => addTab(button, wrapper, tabs.length + 1));
+        if (tabs.length) break;
+      }
+      if (!tabs.length) {
+        const buttons = [...document.querySelectorAll("button[data-item-id]")];
+        buttons.forEach((button) => addTab(button, button.closest?.("[data-active-id]"), tabs.length + 1));
+      }
+    } catch {
+    }
+    if (!tabs.length && basePage?.seasonId) {
+      const label = selectDownloadTitle(basePage.seasonTitle, basePage.filenameTitle, basePage.title) || "当前季度";
+      tabs.push({ seasonIndex: 1, seasonId: String(basePage.seasonId), seasonLabel: label, seasonTitle: label, current: true, source: "page" });
+    } else if (basePage?.seasonId && !seen.has(String(basePage.seasonId))) {
+      const label = selectDownloadTitle(basePage.seasonTitle, basePage.filenameTitle, basePage.title) || "当前季度";
+      tabs.push({ seasonIndex: tabs.length + 1, seasonId: String(basePage.seasonId), seasonLabel: label, seasonTitle: label, current: true, source: "page" });
+    }
+    return tabs;
   }
   function normalizeDownloadCollectionPages(entry) {
     const rawPages = Array.isArray(entry?.pages) && entry.pages.length
@@ -612,6 +662,9 @@
   function normalizeDownloadBangumiEntry(entry, basePage, fallbackIndex = 0) {
     const episodeIndex = Math.max(1, Math.floor(Number(entry?.episodeIndex || entry?.index || entry?.episode_index || fallbackIndex + 1) || fallbackIndex + 1));
     const seasonId = String(entry?.seasonId || basePage?.seasonId || "").match(/^\d+$/)?.[0] || "";
+    const seasonIndex = Math.max(1, Math.floor(Number(entry?.seasonIndex || basePage?.seasonIndex || 1) || 1));
+    const seasonTitle = selectDownloadTitle(entry?.seasonTitle, entry?.seasonLabel, basePage?.seasonTitle, basePage?.filenameTitle) || "当前季度";
+    const seasonLabel = selectDownloadTitle(entry?.seasonLabel, entry?.seasonTitle, seasonTitle) || seasonTitle;
     const epId = String(entry?.epId || entry?.episode_id || "").match(/^\d+$/)?.[0] || "";
     const bvid = normalizedDownloadBvid(entry?.bvid || entry?.videoId);
     const aid = normalizedDownloadAid(entry?.aid || String(entry?.videoId || "").match(/^av(\d+)$/i)?.[1]);
@@ -628,6 +681,10 @@
       downloadScope: "bangumi",
       episodeIndex,
       seasonId,
+      seasonIndex,
+      seasonLabel,
+      seasonTitle,
+      multiSeason: !!entry?.multiSeason || !!basePage?.multiSeason,
       epId,
       videoId,
       bvid,
@@ -644,12 +701,19 @@
       current
     };
   }
-  function buildDownloadBangumiCatalogFromSeason(data, basePage) {
+  function buildDownloadBangumiCatalogFromSeason(data, basePage, seasonMeta = {}) {
     const seasonId = String(data?.season_id || basePage?.seasonId || "").match(/^\d+$/)?.[0] || "";
     const seasonTitle = selectDownloadTitle(data?.season_title, data?.title, basePage?.filenameTitle, basePage?.title) || "Bilibili 视频";
+    const seasonIndex = Math.max(1, Math.floor(Number(seasonMeta?.seasonIndex || basePage?.seasonIndex || 1) || 1));
+    const seasonLabel = selectDownloadTitle(seasonMeta?.seasonLabel, seasonMeta?.seasonTitle, data?.season_title, seasonTitle) || `第${seasonIndex}季`;
+    const multiSeason = !!seasonMeta?.multiSeason || !!basePage?.multiSeason;
     const episodes = Array.isArray(data?.episodes) ? data.episodes : [];
     return episodes.map((episode, index) => normalizeDownloadBangumiEntry({
       seasonId,
+      seasonIndex,
+      seasonLabel,
+      seasonTitle,
+      multiSeason,
       epId: episode?.ep_id,
       episodeIndex: episode?.index || episode?.episode_index || episode?.sort,
       aid: episode?.aid,
@@ -661,10 +725,11 @@
       duration: episode?.duration,
       badge: episode?.badge,
       filenameTitle: seasonTitle,
-      current: String(episode?.ep_id || "") === String(basePage?.epId || "") ||
-        String(episode?.cid || "") === String(basePage?.cid || ""),
+      current: String(episode?.ep_id || "") === String(basePage?.epId || "") && !!basePage?.epId ||
+        String(episode?.cid || "") === String(basePage?.cid || "") && !!basePage?.cid ||
+        !!seasonMeta?.currentSeason && !basePage?.epId && !basePage?.cid && !basePage?.videoId && index === 0,
       source: "pgc-season"
-    }, { ...basePage, seasonId, filenameTitle: seasonTitle, seasonTitle }, index));
+    }, { ...basePage, seasonId, seasonIndex, seasonLabel, filenameTitle: seasonTitle, seasonTitle, multiSeason }, index));
   }
   async function fetchDownloadBangumiSeasonData(basePage, signal) {
     if (typeof window.fetch !== "function") throw new Error("当前页面无法读取番剧目录");
@@ -689,6 +754,56 @@
     const catalog = buildDownloadBangumiCatalogFromSeason(data, basePage);
     if (!catalog.length) throw new Error("番剧目录没有可下载的正片集");
     return catalog;
+  }
+  async function fetchDownloadBangumiCatalogBundle(basePage, signal, fallback = []) {
+    const tabs = readDownloadBangumiSeasonTabs(basePage);
+    const seasonTabs = tabs.length ? tabs : [{
+      seasonIndex: 1,
+      seasonId: String(basePage?.seasonId || ""),
+      seasonLabel: selectDownloadTitle(basePage?.seasonTitle, basePage?.filenameTitle, basePage?.title) || "当前季度",
+      seasonTitle: selectDownloadTitle(basePage?.seasonTitle, basePage?.filenameTitle, basePage?.title) || "当前季度",
+      current: true,
+      source: "page"
+    }];
+    const multiSeason = new Set(seasonTabs.map((tab) => tab.seasonId).filter(Boolean)).size > 1;
+    const gate = createDownloadBatchResolutionGate(2);
+    const catalogs = await Promise.all(seasonTabs.map(async (tab) => {
+      let release = null;
+      try {
+        release = await gate.acquire(signal);
+        const currentSeason = tab.seasonId === String(basePage?.seasonId || "") || !basePage?.seasonId && !!tab.current;
+        const seasonPage = {
+          ...basePage,
+          seasonId: tab.seasonId || basePage?.seasonId || "",
+          epId: currentSeason ? basePage?.epId || "" : "",
+          cid: currentSeason ? basePage?.cid || "" : "",
+          videoId: currentSeason ? basePage?.videoId || "" : "",
+          bvid: currentSeason ? basePage?.bvid || "" : "",
+          aid: currentSeason ? basePage?.aid || "" : "",
+          seasonIndex: tab.seasonIndex,
+          seasonLabel: tab.seasonLabel,
+          seasonTitle: tab.seasonTitle,
+          multiSeason
+        };
+        const data = await fetchDownloadBangumiSeasonData(seasonPage, signal);
+        return buildDownloadBangumiCatalogFromSeason(data, seasonPage, { ...tab, currentSeason, multiSeason });
+      } catch {
+        return [];
+      } finally {
+        release?.();
+      }
+    }));
+    gate.cancel();
+    const entries = catalogs.flat();
+    if (entries.length) return entries;
+    const currentTab = seasonTabs.find((tab) => tab.current) || seasonTabs[0];
+    return (fallback || []).map((entry, index) => normalizeDownloadBangumiEntry({
+      ...entry,
+      seasonIndex: currentTab?.seasonIndex || 1,
+      seasonLabel: currentTab?.seasonLabel,
+      seasonTitle: currentTab?.seasonTitle,
+      multiSeason
+    }, basePage, index));
   }
   function buildDownloadEpisodeCatalogFromView(data, basePage, returnedId = "") {
     const pageItems = Array.isArray(data?.pages) && data.pages.length
@@ -737,7 +852,7 @@
     if (basePage?.downloadScope === "bangumi") {
       const fallbackCatalog = (domEntries || []).map((entry, index) => normalizeDownloadBangumiEntry(entry, basePage, index));
       try {
-        return { catalog: await fetchDownloadBangumiCatalog(basePage, signal, fallbackCatalog), collection: [] };
+        return { catalog: await fetchDownloadBangumiCatalogBundle(basePage, signal, fallbackCatalog), collection: [] };
       } catch {
         return { catalog: fallbackCatalog, collection: [] };
       }
@@ -846,6 +961,10 @@
   }
   function downloadVideoListLabel(entry) {
     if (entry?.downloadScope === "bangumi" || entry?.kind === "bangumi-episode") {
+      if (entry?.multiSeason) {
+        const season = `S${String(Math.max(1, Number(entry?.seasonIndex) || 1)).padStart(2, "0")}`;
+        return `${season}E${String(Math.max(1, Number(entry?.episodeIndex) || 1)).padStart(2, "0")}`;
+      }
       return `E${String(Math.max(1, Number(entry?.episodeIndex) || 1)).padStart(2, "0")}`;
     }
     if (entry?.downloadScope === "collection" || entry?.kind === "collection-page" || entry?.kind === "collection") {
@@ -1008,16 +1127,20 @@
         current: downloadVideoListEntryIsCurrent(entry, basePage)
       }))
       : [];
+    const bangumiSource = isBangumi ? (Array.isArray(catalog) ? catalog : []) : [];
+    const bangumiSeasonIds = new Set(bangumiSource.map((entry) => String(entry?.seasonId || "")).filter(Boolean));
+    const multiSeason = bangumiSeasonIds.size > 1 || bangumiSource.some((entry) => entry?.multiSeason);
     const bangumiEntries = isBangumi
-      ? (Array.isArray(catalog) ? catalog : [])
+      ? bangumiSource
         .map((entry, index) => normalizeDownloadBangumiEntry(entry, basePage, index))
-        .sort((left, right) => left.episodeIndex - right.episodeIndex)
+        .sort((left, right) => (left.seasonIndex - right.seasonIndex) || (left.episodeIndex - right.episodeIndex))
         .map((entry) => ({
           ...entry,
           kind: "bangumi-episode",
           downloadScope: "bangumi",
+          multiSeason,
           listKey: `bangumi:${entry.seasonId || basePage?.seasonId || "unknown"}:${entry.epId || entry.videoId || entry.cid || entry.episodeIndex}`,
-          label: downloadVideoListLabel(entry),
+          label: downloadVideoListLabel({ ...entry, multiSeason }),
           current: downloadVideoListEntryIsCurrent(entry, basePage) || !!entry.current
         }))
       : [];
@@ -1070,6 +1193,30 @@
     const groups = [];
     const byKey = new Map();
     for (const entry of Array.isArray(entries) ? entries : []) {
+      if (entry?.downloadScope === "bangumi" && entry?.multiSeason) {
+        const seasonIndex = Math.max(1, Number(entry?.seasonIndex) || 1);
+        const seasonId = String(entry?.seasonId || "unknown");
+        const key = `bangumi-season:${seasonIndex}:${seasonId}`;
+        let group = byKey.get(key);
+        if (!group) {
+          group = {
+            key,
+            kind: "bangumi-season",
+            seasonIndex,
+            seasonId,
+            label: `S${String(seasonIndex).padStart(2, "0")}`,
+            title: entry?.seasonLabel || entry?.seasonTitle || `第${seasonIndex}季`,
+            children: [],
+            current: false,
+            listOrder: Number(entry?.listOrder) || groups.length
+          };
+          byKey.set(key, group);
+          groups.push(group);
+        }
+        group.children.push(entry);
+        group.current = group.current || !!entry?.current;
+        continue;
+      }
       if (entry?.downloadScope !== "collection") {
         groups.push({
           key: `episode:${entry?.listKey || downloadVideoListIdentity(entry) || groups.length}`,
@@ -1108,9 +1255,11 @@
     }
     return groups
       .map((group) => ({
-        ...group,
+      ...group,
         children: group.children.slice().sort((left, right) => (
-          (Number(left?.page) || 0) - (Number(right?.page) || 0)
+          (group.kind === "bangumi-season"
+            ? (Number(left?.episodeIndex) || 0) - (Number(right?.episodeIndex) || 0)
+            : (Number(left?.page) || 0) - (Number(right?.page) || 0))
           || (Number(left?.listOrder) || 0) - (Number(right?.listOrder) || 0)
         ))
       }))
@@ -1586,6 +1735,10 @@
         downloadScope: isBangumi ? "bangumi" : "episodes",
         seasonId: page.seasonId || request.seasonId || response.seasonId,
         epId: page.epId || request.epId || response.epId,
+        seasonIndex: page.seasonIndex || 0,
+        seasonLabel: page.seasonLabel || "",
+        seasonTitle: page.seasonTitle || "",
+        multiSeason: !!page.multiSeason,
         episodeIndex: page.episodeIndex || 0,
         routeKey: page.routeKey
       }
@@ -1619,6 +1772,10 @@
       downloadScope: identity.downloadScope,
       seasonId: identity.seasonId,
       epId: identity.epId,
+      seasonIndex: identity.seasonIndex,
+      seasonLabel: identity.seasonLabel,
+      seasonTitle: identity.seasonTitle,
+      multiSeason: identity.multiSeason,
       episodeIndex: identity.episodeIndex,
       quality: data.quality,
       duration: identity.duration || (durationMs > 0 ? durationMs / 1000 : Number(data.dash?.duration) || 0),
@@ -1960,10 +2117,14 @@
       page: Number(page.page) || 1,
       title: page.title,
       filenameTitle: page.filenameTitle || page.seasonTitle || page.title,
-      downloadScope: isBangumi ? "bangumi" : "episodes",
-      seasonId: page.seasonId || request.seasonId || responseSeasonId,
-      epId: page.epId || request.epId || responseEpId,
-      episodeIndex: page.episodeIndex || 0,
+        downloadScope: isBangumi ? "bangumi" : "episodes",
+        seasonId: page.seasonId || request.seasonId || responseSeasonId,
+        epId: page.epId || request.epId || responseEpId,
+        seasonIndex: page.seasonIndex || 0,
+        seasonLabel: page.seasonLabel || "",
+        seasonTitle: page.seasonTitle || "",
+        multiSeason: !!page.multiSeason,
+        episodeIndex: page.episodeIndex || 0,
       duration: Number(data?.timelength) > 0 ? Number(data.timelength) / 1000 : Number(data?.dash?.duration) || Number(page.duration) || 0,
       routeKey: page.routeKey || `${page.videoId || page.bvid}|${isBangumi ? `season=${page.seasonId || "unknown"}|ep=${page.epId || "unknown"}` : `p=${Number(page.page) || 1}`}|cid=${page.cid}`
     };
@@ -2017,7 +2178,11 @@
       const catalog = buildDownloadBangumiCatalogFromSeason(data, page);
       const selected = catalog.find((entry) => page.epId && String(entry.epId) === String(page.epId))
         || catalog.find((entry) => page.bvid && entry.bvid === page.bvid)
-        || catalog.find((entry) => page.cid && String(entry.cid) === String(page.cid));
+        || catalog.find((entry) => page.cid && String(entry.cid) === String(page.cid))
+        // /bangumi/play/ss... 是纯季目录页，可能没有当前 ep_id/BVID/CID。
+        // 这里只选一集正片建立清晰度/音频选择基准；批量任务仍会为每个
+        // E 条目单独请求自己的 ep_id、BVID 和 CID。
+        || catalog.find((entry) => entry?.cid);
       if (!selected?.cid) throw new Error("当前番剧集的 CID 不可用");
       return {
         ...page,
@@ -2363,6 +2528,9 @@
   }
   function downloadFilenamePage(model) {
     if (model?.downloadScope === "bangumi") {
+      if (model?.multiSeason) {
+        return `S${String(Math.max(1, Number(model?.seasonIndex) || 1)).padStart(2, "0")}E${String(Math.max(1, Number(model?.episodeIndex) || 1)).padStart(2, "0")}`;
+      }
       return `E${String(Math.max(1, Number(model?.episodeIndex) || 1)).padStart(2, "0")}`;
     }
     const collectionIndex = Math.max(0, Math.floor(Number(model?.collectionIndex) || 0));
@@ -3216,6 +3384,8 @@
       ...basePage,
       downloadScope: "bangumi",
       seasonId,
+      seasonIndex: Math.max(1, Number(entry?.seasonIndex) || Number(basePage?.seasonIndex) || 1),
+      seasonLabel: entry?.seasonLabel || basePage?.seasonLabel || "",
       epId,
       episodeIndex,
       videoId,
@@ -3225,7 +3395,8 @@
       page: 1,
       title: selectDownloadTitle(entry?.title, entry?.part, basePage?.title) || basePage?.title || filenameTitle,
       filenameTitle,
-      seasonTitle: filenameTitle,
+      seasonTitle: entry?.seasonTitle || filenameTitle,
+      multiSeason: !!entry?.multiSeason || !!basePage?.multiSeason,
       duration: Number(entry?.duration) || Number(basePage?.duration) || 0,
       routeKey: `${basePage?.routeKey || `${location.origin.toLowerCase()}${location.pathname}`}|season=${seasonId || "unknown"}|ep=${epId || "unknown"}|cid=${entry?.cid || "unknown"}`,
       requiresCid: false,
@@ -3354,7 +3525,10 @@
       downloadScope: baseModel.downloadScope || "episodes",
       seasonId: baseModel.seasonId || "",
       epId: baseModel.epId || "",
+      seasonIndex: baseModel.seasonIndex || 0,
+      seasonLabel: baseModel.seasonLabel || "",
       episodeIndex: baseModel.episodeIndex || 0,
+      multiSeason: !!baseModel.multiSeason,
       title: baseModel.title,
       filenameTitle: baseModel.filenameTitle,
       seasonTitle: baseModel.seasonTitle,
@@ -3404,6 +3578,9 @@
         episodeIndex: isBangumi ? entry.episodeIndex : 0,
         seasonId: isBangumi ? entry.seasonId : "",
         epId: isBangumi ? entry.epId : "",
+        seasonIndex: isBangumi ? entry.seasonIndex : 0,
+        seasonLabel: isBangumi ? entry.seasonLabel : "",
+        multiSeason: isBangumi ? !!entry.multiSeason : false,
         collectionIndex: isCollection ? entry.collectionIndex : 0,
         collectionPageCount: isCollection ? entry.collectionPageCount || 1 : 1,
         collectionLabel: isCollection ? itemLabel : "",
@@ -3485,6 +3662,9 @@
           collectionLabel: isCollection ? itemLabel : "",
           seasonId: isBangumi ? page.seasonId : "",
           epId: isBangumi ? page.epId : "",
+          seasonIndex: isBangumi ? page.seasonIndex : 0,
+          seasonLabel: isBangumi ? page.seasonLabel : "",
+          multiSeason: isBangumi ? !!page.multiSeason : false,
           episodeIndex: isBangumi ? page.episodeIndex : 0,
           seasonTitle: isBangumi ? page.seasonTitle : "",
           cid: page.cid,
@@ -3545,7 +3725,9 @@
     const headingTitle = document.createElement("h1");
     headingTitle.textContent = "视频下载工作台";
     const headingDesc = document.createElement("p");
-    headingDesc.textContent = "同一 BV 的分 P 与不同 BV 的合集条目统一列出；每项按独立 BVID/AV 与 CID 获取播放轨道。";
+    headingDesc.textContent = model.downloadScope === "bangumi"
+      ? "番剧模式按季度和正片集展示；每集使用独立 season_id、ep_id、BVID/AID 与 CID 获取播放轨道。"
+      : "普通视频模式统一列出同一 BV 的分 P 与不同 BV 的合集条目；每项按独立 BVID/AV 与 CID 获取播放轨道。";
     heading.append(headingTitle, headingDesc);
 
     const videoTitle = document.createElement("div");
@@ -3632,7 +3814,8 @@
       }
       for (const group of videoListState.groups) {
         const children = group.children || [];
-        if (group.kind !== "collection" || children.length <= 1) {
+        const showGroup = group.kind === "bangumi-season" || group.kind === "collection" && children.length > 1;
+        if (!showGroup) {
           if (children[0]) list.appendChild(renderDownloadVideoListEntry(children[0]));
           continue;
         }
@@ -3645,7 +3828,7 @@
         checkbox.checked = validChildren.length > 0 && selectedCount === validChildren.length;
         checkbox.indeterminate = selectedCount > 0 && selectedCount < validChildren.length;
         checkbox.disabled = !validChildren.length;
-        checkbox.setAttribute("aria-label", `选择 ${group.label} 的全部分 P`);
+        checkbox.setAttribute("aria-label", `选择 ${group.label} 的全部${group.kind === "bangumi-season" ? "集" : "分 P"}`);
         checkbox.addEventListener("change", () => {
           videoListState.selected = setDownloadVideoListGroupSelection(videoListState.selected, group, checkbox.checked);
           refreshList();
@@ -3659,7 +3842,8 @@
         meta.className = "bk-dw-episode-meta";
         const identity = group.bvid || group.videoId || (group.aid ? `av${group.aid}` : "未知视频");
         const totalDuration = validChildren.reduce((sum, entry) => sum + (Number(entry.duration) || 0), 0);
-        meta.textContent = `${identity} · ${validChildren.length} 个 P · 已选 ${selectedCount} 个${totalDuration ? ` · 总时长 ${formatDownloadEpisodeDuration(totalDuration)}` : ""}`;
+        const unit = group.kind === "bangumi-season" ? "集" : "P";
+        meta.textContent = `${identity} · ${validChildren.length} 个${unit} · 已选 ${selectedCount} 个${totalDuration ? ` · 总时长 ${formatDownloadEpisodeDuration(totalDuration)}` : ""}`;
         main.append(entryTitle, meta);
         const duration = document.createElement("span");
         duration.className = "bk-dw-episode-duration";
@@ -3669,11 +3853,18 @@
         for (const entry of children) list.appendChild(renderDownloadVideoListEntry(entry, true));
       }
       updateListStats();
+      const currentEntry = videoListState.entries.find((entry) => entry.current);
+      const currentLabel = currentEntry?.label || (model.downloadScope === "bangumi"
+        ? downloadVideoListLabel({ ...model, downloadScope: "bangumi", episodeIndex: model.episodeIndex, seasonIndex: model.seasonIndex, multiSeason: model.multiSeason })
+        : downloadVideoListLabel({ page: model.page }));
+      const bangumiSeasonCount = videoListState.groups.filter((group) => group.kind === "bangumi-season").length;
       badges.textContent = [
         model.videoId || model.bvid,
-        `当前 ${videoListState.entries.find((entry) => entry.current)?.label || downloadVideoListLabel({ page: model.page })}`,
+        `当前 ${currentLabel}`,
         videoListState.entries.length
-          ? `${videoListState.groups.filter((group) => group.kind === "collection").length} 个合集视频 · ${videoListState.entries.length} 个可选 P`
+          ? model.downloadScope === "bangumi"
+            ? `${bangumiSeasonCount || 1} 个季度 · ${videoListState.entries.length} 个可选集`
+            : `${videoListState.groups.filter((group) => group.kind === "collection").length} 个合集视频 · ${videoListState.entries.length} 个可选 P`
           : "列表等待更新",
         model.quality ? `当前画质 ${model.videos.find((track) => track.id === model.quality)?.qualityLabel || model.quality}` : "当前画质未知"
       ].filter(Boolean).join(" · ");
@@ -3793,7 +3984,9 @@
     const audioOnlyButton = makeAction("仅下载选中视频的音频轨", false, () => runSelectedBatch("audio"));
     const note = document.createElement("p");
     note.className = "bk-dw-note";
-    note.textContent = "这是一个统一的视频列表：合集视频父项可一次勾选该 BV 的全部 P，子项也可单独选择；合集中的其它 BV、当前 BV 的多个 P 和普通分 P 可以同时加入同一批任务。每个叶子项单独获取对应 BV/CID 的播放轨道，合集内多 P 显示为 Cxx_Pyy。合并不重新编码，过期、付费或受保护资源不会绕过。";
+    note.textContent = model.downloadScope === "bangumi"
+      ? "这是番剧下载模式：多季度按 S01、S02 分组，季度父项可全选，集项可单独选择；每个集单独使用自己的 season_id、ep_id、BVID/AID 和 CID。番剧远程播放请求最多并发 2 个，进入本地 MP4 合并后仍按内存预算和最多 4 个 Worker 调度。"
+      : "这是普通视频模式：合集视频父项可一次勾选该 BV 的全部 P，子项也可单独选择；合集中的其它 BV、当前 BV 的多个 P 和普通分 P 可以同时加入同一批任务。每个叶子项单独获取对应 BV/CID 的播放轨道，合集内多 P 显示为 Cxx_Pyy。合并不重新编码，过期、付费或受保护资源不会绕过。";
     const taskHeading = document.createElement("h2");
     taskHeading.className = "bk-dw-task-heading";
     taskHeading.textContent = "当前会话任务";

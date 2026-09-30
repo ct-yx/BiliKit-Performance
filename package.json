@@ -1,14 +1,27 @@
 {
   "name": "bilikit-performance-build",
   "private": true,
-  "version": "0.6.21",
+  "version": "0.6.43",
   "description": "Builds and embeds the on-demand BiliKit DASH remux worker",
   "scripts": {
+    "build": "npm run build:remux-worker && npm run build:userscript",
+    "build:userscript": "node scripts/build-userscript.mjs",
     "build:remux-worker": "node scripts/build-remux-worker.mjs",
     "test:download-identity": "node scripts/test-download-identity.mjs",
+    "test:download-active-fetch": "node scripts/test-download-active-fetch.mjs",
     "test:download-extension": "node scripts/test-download-extension.mjs",
     "test:download-filename": "node scripts/test-download-filename.mjs",
-    "test:download-save": "node scripts/test-download-save.mjs"
+    "test:download-batch": "node scripts/test-download-batch.mjs",
+    "test:download-collection": "node scripts/test-download-collection.mjs",
+    "test:download-video-list": "node scripts/test-download-video-list.mjs",
+    "test:download-mixed-batch": "node scripts/test-download-mixed-batch.mjs",
+    "test:download-lifecycle": "node scripts/test-download-lifecycle.mjs",
+    "test:download-task-retention": "node scripts/test-download-task-retention.mjs",
+    "test:download-save": "node scripts/test-download-save.mjs",
+    "test:download-progress": "node scripts/test-download-progress.mjs",
+    "test:network-hooks": "node scripts/test-network-hooks.mjs",
+    "test:userscript-build": "node scripts/test-userscript-build.mjs",
+    "test:favorites-fix": "node scripts/test-favorites-fix.mjs"
   },
   "dependencies": {
     "mediabunny": "1.59.1"

@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { readUserscriptSource } from "./helpers/read-userscript-source.mjs";
 
-const script = await readFile(new URL("../bilikit-performance.user.js", import.meta.url), "utf8");
+const script = await readUserscriptSource();
 const start = script.indexOf("  function downloadExtension");
 const end = script.indexOf("  function runSeparateDownload", start);
 if (start < 0 || end < 0) throw new Error("无法定位下载扩展名函数");

@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { readUserscriptSource } from "./helpers/read-userscript-source.mjs";
 
-const script = await readFile(new URL("../bilikit-performance.user.js", import.meta.url), "utf8");
+const script = await readUserscriptSource();
 const identityStart = script.indexOf("  function normalizedDownloadBvid");
 const identityEnd = script.indexOf("  function readDownloadMeta", identityStart);
 const requestStart = script.indexOf("  function parseDownloadRequestIdentity");

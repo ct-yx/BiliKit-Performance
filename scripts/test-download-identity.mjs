@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { readUserscriptSource } from "./helpers/read-userscript-source.mjs";
 
-const script = await readFile(new URL("../bilikit-performance.user.js", import.meta.url), "utf8");
+const script = await readUserscriptSource();
 const start = script.indexOf("  function normalizedDownloadBvid");
 const end = script.indexOf("  function readDownloadMeta", start);
 if (start < 0 || end < 0) throw new Error("无法定位下载身份解析函数");
@@ -98,6 +98,31 @@ vm.runInNewContext(
 const playerPage = playerContext.playerApi.currentDownloadPageIdentity();
 if (playerPage.cid !== "41301577497" || playerPage.page !== 1 || playerPage.bvid !== "BV1pb8o6yE8f") {
   throw new Error(`播放器 manifest 未补齐当前 CID：${JSON.stringify(playerPage)}`);
+}
+
+const titleContext = {
+  URL,
+  location: { href: "https://www.bilibili.com/video/BV1j2YC6iE4i/?p=2" },
+  window: {
+    __INITIAL_STATE__: {
+      videoData: { bvid: "BV1j2YC6iE4i", pages: [] }
+    }
+  },
+  document: {
+    title: "P2_哔哩哔哩_bilibili",
+    querySelector: () => null,
+    querySelectorAll: (selector) => selector === "#viewbox_report h1"
+      ? [{ innerText: "一口气看爽超火漫画！《因果之战》万业尸仙跨时空跨因果入侵！人类何去何从？", textContent: "" }]
+      : []
+  }
+};
+vm.runInNewContext(
+  `${script.slice(identityStart, identityEnd)}\nthis.titleApi = { currentDownloadPageIdentity };`,
+  titleContext
+);
+const titlePage = titleContext.titleApi.currentDownloadPageIdentity();
+if (titlePage.title !== "一口气看爽超火漫画！《因果之战》万业尸仙跨时空跨因果入侵！人类何去何从？") {
+  throw new Error(`未优先读取播放页正文标题：${JSON.stringify(titlePage)}`);
 }
 
 const avContext = {

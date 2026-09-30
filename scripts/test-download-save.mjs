@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readUserscriptSource } from "./helpers/read-userscript-source.mjs";
 
-const script = await readFile(new URL("../bilikit-performance.user.js", import.meta.url), "utf8");
+const script = await readUserscriptSource();
 const start = script.indexOf("  function saveMergedBlobWithBrowser");
 const end = script.indexOf("  function gmRequestArrayBuffer", start);
 if (start < 0 || end < 0) throw new Error("无法定位合并保存逻辑");

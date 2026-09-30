@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { readUserscriptSource } from "./helpers/read-userscript-source.mjs";
 
-const script = await readFile(new URL("../bilikit-performance.user.js", import.meta.url), "utf8");
+const script = await readUserscriptSource();
 const start = script.indexOf("  function downloadCodecLabel");
 const end = script.indexOf("  function updateDownloadTask", start);
 const extensionStart = script.indexOf("  function downloadExtension");
@@ -49,6 +49,38 @@ if (!splitVideo.endsWith("_1080P_AVC_video.mp4")) throw new Error(`视频分轨�
 if (!splitAudio.endsWith("_AAC_192kbps_audio.m4a")) throw new Error(`音频分轨文件名错误：${splitAudio}`);
 if (taskTitle.endsWith(".mp4")) throw new Error(`任务标题不应带扩展名：${taskTitle}`);
 
+const collectionName = buildDownloadFileName({
+  title: "合集主标题",
+  bvid: "BV1NsVh6eE1o",
+  collectionIndex: 2,
+  page: 1
+}, "merge", video, audio);
+if (collectionName !== "合集主标题_BV1NsVh6eE1o_C02_1080P_AVC_AAC_video_audio.mp4") {
+  throw new Error(`合集文件名错误：${collectionName}`);
+}
+
+const collectionItemName = buildDownloadFileName({
+  title: "当前打开的合集视频",
+  filenameTitle: "合集条目二",
+  collectionTitle: "合集主标题",
+  bvid: "BV1NsVh6eE1o",
+  collectionIndex: 2,
+  page: 1
+}, "merge", video, audio);
+if (!collectionItemName.startsWith("合集条目二_BV1NsVh6eE1o_C02_")) {
+  throw new Error(`合集文件没有使用条目标题：${collectionItemName}`);
+}
+const nestedCollectionName = buildDownloadFileName({
+  title: "合集条目二",
+  bvid: "BV1NsVh6eE1o",
+  collectionIndex: 2,
+  collectionPageCount: 4,
+  page: 2
+}, "merge", video, audio);
+if (!nestedCollectionName.includes("_C02_P02_1080P_AVC_AAC_video_audio.mp4")) {
+  throw new Error(`合集内分 P 文件名没有使用 Cxx_Pyy：${nestedCollectionName}`);
+}
+
 const avName = buildDownloadFileName({ title: "AV 测试", videoId: "av123456", page: 2 }, "audio", null, {
   kind: "audio",
   codecs: "fLaC",
@@ -64,6 +96,15 @@ if (pagePrefixed !== "哔哩哔哩_bilibili_BV1j2YC6iE4i_P02_1080P_AVC_AAC_video
 const pagePrefixedWithSpace = buildDownloadFileName({ title: "P 02 - 测试视频", bvid: "BV1j2YC6iE4i", page: 2 }, "video", video, null);
 if (pagePrefixedWithSpace !== "测试视频_BV1j2YC6iE4i_P02_1080P_AVC_video.mp4") {
   throw new Error(`带空格的分 P 标题前缀未清理：${pagePrefixedWithSpace}`);
+}
+
+const actualPageTitle = buildDownloadFileName({
+  title: "一口气看爽超火漫画！《因果之战》万业尸仙跨时空跨因果入侵！人类何去何从？",
+  bvid: "BV1j2YC6iE4i",
+  page: 2
+}, "merge", { ...video, qualityLabel: "1080P 高清", codecs: "av01.0.08M.08" }, audio);
+if (!actualPageTitle.startsWith("一口气看爽超火漫画_因果之战_万业尸仙跨时空跨因果入侵_人类何去何从_BV1j2YC6iE4i_P02_")) {
+  throw new Error(`正文标题未进入下载文件名：${actualPageTitle}`);
 }
 
 console.log("下载文件名测试通过：统一下划线格式、轨道标签、分 P、编码和真实扩展名。");

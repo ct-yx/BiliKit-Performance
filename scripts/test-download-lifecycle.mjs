@@ -93,9 +93,9 @@ if (!wakeInit.includes('runtime.listen(document, "playing"') ||
 const panelStart = entryPrefix.indexOf("  function mountPanel()");
 const panelEnd = entryPrefix.indexOf("  const CDN_SUFFIXES", panelStart);
 const panel = entryPrefix.slice(panelStart, panelEnd);
-if (!panel.includes('runtime.listen(document, "keydown"') || !panel.includes("runtime.createObserver(") ||
-  !panel.includes("disconnectAndForget()") || !panel.includes("root2.remove()")) {
-  throw new Error("设置面板的全局键盘监听或 FAB 观察器没有随 runtime 卸载");
+if (!panel.includes('runtime.listen(document, "keydown"') || !panel.includes("runtime.addCleanup(") ||
+  !panel.includes("root2.remove()") || /bk-feed-fab|bk-settings|createObserver/.test(panel)) {
+  throw new Error("设置面板没有保持独立挂载和可清理生命周期，或仍在改写外部悬浮按钮");
 }
 
 const drawerStart = entrySuffix.indexOf("  function installSiteDrawer()");

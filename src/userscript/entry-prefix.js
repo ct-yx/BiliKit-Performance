@@ -11,6 +11,8 @@
   const SENSITIVE = /accessKey|token|secret|passwd|password/i;
   const SETTINGS_EVENT = "bilikit:settings-changed";
   const BILIKIT_THEME_EVENT = "bilikit:theme-changed";
+  // document-start 会在模块声明完成前安装首页网络钩子，必须先完成初始化。
+  let activeModuleCleanupScope = null;
   const EARLY_HOME_PRECONNECT_ORIGINS = [
     "https://s1.hdslb.com",
     "https://api.bilibili.com",
@@ -319,7 +321,6 @@
   }
   const moduleRuntimes = new Map();
   let moduleLifecycleInstalled = false;
-  let activeModuleCleanupScope = null;
   function cleanupList(list) {
     while (list?.length) {
       try { list.pop()(); } catch {
@@ -2307,7 +2308,7 @@
       }
     })();
   }
-  const VERSION = "0.6.43";
+  const VERSION = "0.6.44";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -2397,8 +2398,6 @@
 .gear:hover svg { transform: rotate(30deg); }
 .gear:active { transform: scale(.94); }
 .gear svg { width: 20px; height: 20px; display: block; transition: transform .16s ease; }
-.gear.hidden { display: none; } /* Feed 在场时并入其 FAB，隐藏这颗独立齿轮 */
-
 .overlay {
   position: fixed; inset: 0; z-index: 2147483501; background: rgba(0,0,0,.5);
   display: flex; align-items: center; justify-content: center;
@@ -2984,48 +2983,7 @@
     });
     sr.append(gear, overlay);
     document.body.appendChild(root2);
-    const FAB_GEAR = GEAR_SVG.replace("<svg ", '<svg width="20" height="20" ');
-    let settingsFabButton = null;
-    const syncFab = () => {
-      const fab = document.querySelector(".bk-feed-fab");
-      if (fab) {
-        if (!fab.querySelector(".bk-settings")) {
-          const b = document.createElement("button");
-          b.className = "bk-settings";
-          b.title = "BiliKit Performance 设置";
-          b.setAttribute("aria-label", "BiliKit Performance 设置");
-          b.innerHTML = FAB_GEAR;
-          b.addEventListener("click", open);
-          fab.insertBefore(b, fab.querySelector(".bk-refresh"));
-          settingsFabButton = b;
-        }
-        gear.classList.add("hidden");
-      } else {
-        gear.classList.remove("hidden");
-      }
-    };
-    syncFab();
-    let panelObserver = null;
-    let fabSyncFrame = null;
-    try {
-      const scheduleFabSync = () => {
-        if (fabSyncFrame) return;
-        fabSyncFrame = runtime.frame(() => {
-          fabSyncFrame = null;
-          syncFab();
-        });
-      };
-      panelObserver = runtime.createObserver(scheduleFabSync);
-      panelObserver?.observe(document.body, { childList: true });
-    } catch {
-    }
     runtime.addCleanup(() => {
-      panelObserver?.disconnectAndForget();
-      panelObserver = null;
-      fabSyncFrame?.cancel();
-      fabSyncFrame = null;
-      settingsFabButton?.remove();
-      settingsFabButton = null;
       root2.remove();
     });
   }

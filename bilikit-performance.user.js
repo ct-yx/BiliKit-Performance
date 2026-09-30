@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.6.43
+// @version      0.6.45
 // @author       shiinayane
 // @description  B 站首页性能与 CDN 优化，提供统一视频列表下载工作台，支持合集视频及条目分 P、收藏夹修复和 MP4 音视频封装。
 // @license      MIT
@@ -172,6 +172,8 @@ var BiliKitNetworkHookModule = (() => {
   const SENSITIVE = /accessKey|token|secret|passwd|password/i;
   const SETTINGS_EVENT = "bilikit:settings-changed";
   const BILIKIT_THEME_EVENT = "bilikit:theme-changed";
+  // document-start 会在模块声明完成前安装首页网络钩子，必须先完成初始化。
+  let activeModuleCleanupScope = null;
   const EARLY_HOME_PRECONNECT_ORIGINS = [
     "https://s1.hdslb.com",
     "https://api.bilibili.com",
@@ -916,7 +918,6 @@ var BiliKitDownloadProgressModule = (() => {
   }
   const moduleRuntimes = new Map();
   let moduleLifecycleInstalled = false;
-  let activeModuleCleanupScope = null;
   function cleanupList(list) {
     while (list?.length) {
       try { list.pop()(); } catch {
@@ -2904,7 +2905,7 @@ var BiliKitDownloadProgressModule = (() => {
       }
     })();
   }
-  const VERSION = "0.6.43";
+  const VERSION = "0.6.45";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -2994,8 +2995,6 @@ var BiliKitDownloadProgressModule = (() => {
 .gear:hover svg { transform: rotate(30deg); }
 .gear:active { transform: scale(.94); }
 .gear svg { width: 20px; height: 20px; display: block; transition: transform .16s ease; }
-.gear.hidden { display: none; } /* Feed 在场时并入其 FAB，隐藏这颗独立齿轮 */
-
 .overlay {
   position: fixed; inset: 0; z-index: 2147483501; background: rgba(0,0,0,.5);
   display: flex; align-items: center; justify-content: center;
@@ -3581,48 +3580,7 @@ var BiliKitDownloadProgressModule = (() => {
     });
     sr.append(gear, overlay);
     document.body.appendChild(root2);
-    const FAB_GEAR = GEAR_SVG.replace("<svg ", '<svg width="20" height="20" ');
-    let settingsFabButton = null;
-    const syncFab = () => {
-      const fab = document.querySelector(".bk-feed-fab");
-      if (fab) {
-        if (!fab.querySelector(".bk-settings")) {
-          const b = document.createElement("button");
-          b.className = "bk-settings";
-          b.title = "BiliKit Performance 设置";
-          b.setAttribute("aria-label", "BiliKit Performance 设置");
-          b.innerHTML = FAB_GEAR;
-          b.addEventListener("click", open);
-          fab.insertBefore(b, fab.querySelector(".bk-refresh"));
-          settingsFabButton = b;
-        }
-        gear.classList.add("hidden");
-      } else {
-        gear.classList.remove("hidden");
-      }
-    };
-    syncFab();
-    let panelObserver = null;
-    let fabSyncFrame = null;
-    try {
-      const scheduleFabSync = () => {
-        if (fabSyncFrame) return;
-        fabSyncFrame = runtime.frame(() => {
-          fabSyncFrame = null;
-          syncFab();
-        });
-      };
-      panelObserver = runtime.createObserver(scheduleFabSync);
-      panelObserver?.observe(document.body, { childList: true });
-    } catch {
-    }
     runtime.addCleanup(() => {
-      panelObserver?.disconnectAndForget();
-      panelObserver = null;
-      fabSyncFrame?.cancel();
-      fabSyncFrame = null;
-      settingsFabButton?.remove();
-      settingsFabButton = null;
       root2.remove();
     });
   }
@@ -10656,11 +10614,16 @@ var BiliKitDownloadProgressModule = (() => {
     const bvid = normalizedDownloadBvid(videoId);
     return {
       title: normalizeDownloadTitle(source.title) || "Bilibili 视频",
+      filenameTitle: normalizeDownloadTitle(source.filenameTitle || source.seasonTitle || source.title) || "Bilibili 视频",
       videoId,
       bvid,
       aid: normalizedDownloadAid(source.aid || String(videoId || "").match(/^av(\d+)$/i)?.[1]),
       cid: String(source.cid || "").slice(0, 32),
       page: Math.max(1, Math.min(999, Number(source.page) || 1)),
+      downloadScope: String(source.downloadScope || "episodes"),
+      seasonId: String(source.seasonId || "").match(/^\d+$/)?.[0] || "",
+      epId: String(source.epId || "").match(/^\d+$/)?.[0] || "",
+      episodeIndex: Math.max(0, Math.floor(Number(source.episodeIndex) || 0)),
       quality: Number(source.quality) || 0,
       duration: Math.max(0, Number(source.duration) || 0),
       routeKey: String(source.routeKey || "").slice(0, 500),
@@ -10710,6 +10673,7 @@ var BiliKitDownloadProgressModule = (() => {
     try {
       const url = new URL(value, location.href);
       const pathMatch = url.pathname.match(/\/video\/((?:BV[0-9A-Za-z]+|av\d+))(?:\/|$)/i);
+      const bangumiMatch = url.pathname.match(/\/bangumi\/play\/(ss|ep)(\d+)(?:\/|$)/i);
       const queryBvid = String(url.searchParams.get("bvid") || "").match(/^BV[0-9A-Za-z]+$/i)?.[0] || "";
       const queryAid = String(url.searchParams.get("aid") || "").match(/^\d+$/)?.[0] || "";
       const videoId = normalizedDownloadVideoId(pathMatch?.[1] || queryBvid || (queryAid ? `av${queryAid}` : ""));
@@ -10717,6 +10681,9 @@ var BiliKitDownloadProgressModule = (() => {
       const aid = normalizedDownloadAid(videoId.match(/^av(\d+)$/i)?.[1] || (!bvid ? queryAid : ""));
       const page = Number(url.searchParams.get("p")) || 0;
       const cid = String(url.searchParams.get("cid") || "");
+      const seasonId = String(url.searchParams.get("season_id") || (bangumiMatch?.[1]?.toLowerCase() === "ss" ? bangumiMatch[2] : "")).match(/^\d+$/)?.[0] || "";
+      const epId = String(url.searchParams.get("ep_id") || (bangumiMatch?.[1]?.toLowerCase() === "ep" ? bangumiMatch[2] : "")).match(/^\d+$/)?.[0] || "";
+      const downloadScope = bangumiMatch ? "bangumi" : "episodes";
       const pathname = url.pathname.replace(/\/+$/, "") || "/";
       // pathname 中包含大小写敏感的 BV 号；不要把整个路径转小写。
       const routePathname = pathname.replace(/(\/video\/)((?:BV[0-9A-Za-z]+|av\d+))/i, (_match, prefix, id) => `${prefix}${normalizedDownloadVideoId(id)}`);
@@ -10728,11 +10695,16 @@ var BiliKitDownloadProgressModule = (() => {
         aid,
         page,
         cid,
+        downloadScope,
+        seasonId,
+        epId,
         baseKey,
-        routeKey: `${baseKey}|p=${page || "unknown"}|cid=${cid || "unknown"}`
+        routeKey: bangumiMatch
+          ? `${baseKey}|season=${seasonId || "unknown"}|ep=${epId || "unknown"}|cid=${cid || "unknown"}`
+          : `${baseKey}|p=${page || "unknown"}|cid=${cid || "unknown"}`
       };
     } catch {
-      return { href: "", videoId: "", bvid: "", aid: "", page: 0, cid: "", baseKey: "", routeKey: "" };
+      return { href: "", videoId: "", bvid: "", aid: "", page: 0, cid: "", downloadScope: "episodes", seasonId: "", epId: "", baseKey: "", routeKey: "" };
     }
   }
   function readDownloadMeta(name, attribute = "name") {
@@ -10794,6 +10766,15 @@ var BiliKitDownloadProgressModule = (() => {
     return hours ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}` : `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
   }
   function readDownloadEpisodeCatalogFromDom(basePage = currentDownloadPageIdentity()) {
+    if (basePage?.downloadScope === "bangumi") {
+      return basePage.videoId || basePage.epId
+        ? [normalizeDownloadBangumiEntry({
+          ...basePage,
+          episodeIndex: 1,
+          source: "page"
+        }, basePage, 0)]
+        : [];
+    }
     const entries = [];
     let nodes = [];
     try {
@@ -10985,6 +10966,7 @@ var BiliKitDownloadProgressModule = (() => {
     return confirmedDownloadCollectionCatalog(collectionEntries, basePage).length ? "collection" : "episodes";
   }
   function readDownloadCollectionCatalog(basePage = currentDownloadPageIdentity()) {
+    if (basePage?.downloadScope === "bangumi") return [];
     const entries = [];
     const state = window.__INITIAL_STATE__ || {};
     const videoData = state.videoData || state.videoInfo || state.epInfo || {};
@@ -11107,6 +11089,91 @@ var BiliKitDownloadProgressModule = (() => {
     }
     return { data, returnedId };
   }
+  function normalizeBangumiDuration(value) {
+    const number = Math.max(0, Number(value) || 0);
+    return number > 10000 ? number / 1000 : number;
+  }
+  function normalizeDownloadBangumiEntry(entry, basePage, fallbackIndex = 0) {
+    const episodeIndex = Math.max(1, Math.floor(Number(entry?.episodeIndex || entry?.index || entry?.episode_index || fallbackIndex + 1) || fallbackIndex + 1));
+    const seasonId = String(entry?.seasonId || basePage?.seasonId || "").match(/^\d+$/)?.[0] || "";
+    const epId = String(entry?.epId || entry?.episode_id || "").match(/^\d+$/)?.[0] || "";
+    const bvid = normalizedDownloadBvid(entry?.bvid || entry?.videoId);
+    const aid = normalizedDownloadAid(entry?.aid || String(entry?.videoId || "").match(/^av(\d+)$/i)?.[1]);
+    const videoId = normalizedDownloadVideoId(entry?.videoId || bvid || (aid ? `av${aid}` : ""));
+    const cid = String(entry?.cid || "").match(/^\d+$/)?.[0] || "";
+    const title = selectDownloadTitle(entry?.title, entry?.showTitle, entry?.longTitle, entry?.part) || `第${episodeIndex}集`;
+    const duration = normalizeBangumiDuration(entry?.duration);
+    const current = !!entry?.current ||
+      (!!epId && !!basePage?.epId && epId === String(basePage.epId)) ||
+      (!!cid && !!basePage?.cid && cid === String(basePage.cid)) ||
+      (!!videoId && downloadVideoIdentityMatches(videoId, aid, basePage?.videoId, basePage?.aid));
+    return {
+      kind: "bangumi-episode",
+      downloadScope: "bangumi",
+      episodeIndex,
+      seasonId,
+      epId,
+      videoId,
+      bvid,
+      aid,
+      cid,
+      page: 1,
+      title,
+      part: normalizeDownloadTitle(entry?.longTitle || entry?.showTitle || entry?.part || title) || title,
+      duration,
+      durationLabel: String(entry?.durationLabel || formatDownloadEpisodeDuration(duration)),
+      badge: normalizeDownloadTitle(entry?.badge),
+      filenameTitle: selectDownloadTitle(entry?.filenameTitle, basePage?.filenameTitle, basePage?.seasonTitle, basePage?.title) || "Bilibili 视频",
+      source: String(entry?.source || "pgc-season"),
+      current
+    };
+  }
+  function buildDownloadBangumiCatalogFromSeason(data, basePage) {
+    const seasonId = String(data?.season_id || basePage?.seasonId || "").match(/^\d+$/)?.[0] || "";
+    const seasonTitle = selectDownloadTitle(data?.season_title, data?.title, basePage?.filenameTitle, basePage?.title) || "Bilibili 视频";
+    const episodes = Array.isArray(data?.episodes) ? data.episodes : [];
+    return episodes.map((episode, index) => normalizeDownloadBangumiEntry({
+      seasonId,
+      epId: episode?.ep_id,
+      episodeIndex: episode?.index || episode?.episode_index || episode?.sort,
+      aid: episode?.aid,
+      bvid: episode?.bvid,
+      cid: episode?.cid,
+      title: episode?.show_title || episode?.title || episode?.long_title,
+      showTitle: episode?.show_title,
+      longTitle: episode?.long_title,
+      duration: episode?.duration,
+      badge: episode?.badge,
+      filenameTitle: seasonTitle,
+      current: String(episode?.ep_id || "") === String(basePage?.epId || "") ||
+        String(episode?.cid || "") === String(basePage?.cid || ""),
+      source: "pgc-season"
+    }, { ...basePage, seasonId, filenameTitle: seasonTitle, seasonTitle }, index));
+  }
+  async function fetchDownloadBangumiSeasonData(basePage, signal) {
+    if (typeof window.fetch !== "function") throw new Error("当前页面无法读取番剧目录");
+    const seasonUrl = new URL("https://api.bilibili.com/pgc/view/web/season");
+    if (basePage?.seasonId) seasonUrl.searchParams.set("season_id", String(basePage.seasonId));
+    else if (basePage?.epId) seasonUrl.searchParams.set("ep_id", String(basePage.epId));
+    else throw new Error("当前番剧缺少 season_id/ep_id");
+    const response = await window.fetch(seasonUrl.href, { credentials: "include", cache: "no-store", signal });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error(`番剧目录接口 HTTP ${response.status}`);
+    }
+    if (!response.ok || Number(payload?.code) !== 0 || !payload?.result) {
+      throw new Error(`番剧目录接口返回 ${Number(payload?.code) || response.status || "未知错误"}`);
+    }
+    return payload.result;
+  }
+  async function fetchDownloadBangumiCatalog(basePage, signal, fallback = []) {
+    const data = await fetchDownloadBangumiSeasonData(basePage, signal);
+    const catalog = buildDownloadBangumiCatalogFromSeason(data, basePage);
+    if (!catalog.length) throw new Error("番剧目录没有可下载的正片集");
+    return catalog;
+  }
   function buildDownloadEpisodeCatalogFromView(data, basePage, returnedId = "") {
     const pageItems = Array.isArray(data?.pages) && data.pages.length
       ? data.pages
@@ -11151,6 +11218,14 @@ var BiliKitDownloadProgressModule = (() => {
     return confirmed.length ? expandDownloadCollectionCatalog(confirmed, basePage) : [];
   }
   async function fetchDownloadCatalogBundle(basePage, signal, domEntries = [], domCollection = []) {
+    if (basePage?.downloadScope === "bangumi") {
+      const fallbackCatalog = (domEntries || []).map((entry, index) => normalizeDownloadBangumiEntry(entry, basePage, index));
+      try {
+        return { catalog: await fetchDownloadBangumiCatalog(basePage, signal, fallbackCatalog), collection: [] };
+      } catch {
+        return { catalog: fallbackCatalog, collection: [] };
+      }
+    }
     const fallbackCatalog = (domEntries || []).map((entry) => normalizeDownloadCatalogEntry(entry, basePage));
     const fallbackCollection = confirmedDownloadCollectionCatalog(domCollection, basePage);
     try {
@@ -11254,6 +11329,9 @@ var BiliKitDownloadProgressModule = (() => {
     return !!entry && !!entry.videoId && (!entry.cid || /^\d+$/.test(String(entry.cid)));
   }
   function downloadVideoListLabel(entry) {
+    if (entry?.downloadScope === "bangumi" || entry?.kind === "bangumi-episode") {
+      return `E${String(Math.max(1, Number(entry?.episodeIndex) || 1)).padStart(2, "0")}`;
+    }
     if (entry?.downloadScope === "collection" || entry?.kind === "collection-page" || entry?.kind === "collection") {
       const collection = `C${String(Math.max(1, Number(entry.collectionIndex) || 1)).padStart(2, "0")}`;
       const pageCount = Math.max(1, Number(entry.collectionPageCount) || 1);
@@ -11263,6 +11341,7 @@ var BiliKitDownloadProgressModule = (() => {
   }
   function downloadVideoListEntryIsCurrent(entry, basePage) {
     if (!entry || !basePage || !downloadVideoIdentityMatches(entry.videoId || entry.bvid, entry.aid, basePage.videoId || basePage.bvid, basePage.aid)) return false;
+    if (entry.downloadScope === "bangumi" && entry.epId && basePage.epId) return String(entry.epId) === String(basePage.epId);
     if (entry.cid && basePage.cid) return String(entry.cid) === String(basePage.cid);
     return Number(entry.page) === Number(basePage.page || 0);
   }
@@ -11322,7 +11401,8 @@ var BiliKitDownloadProgressModule = (() => {
       }
     };
   }
-  function downloadBatchResolutionConcurrency() {
+  function downloadBatchResolutionConcurrency(scope = "episodes") {
+    if (scope === "bangumi") return 2;
     const cores = Math.max(1, Number(navigator.hardwareConcurrency) || 2);
     // 这里只限制 view/playurl 身份解析，分轨任务交给 GM_download 后不经过此闸门。
     return Math.max(2, Math.min(6, Math.floor(cores / 2) || 2));
@@ -11399,6 +11479,7 @@ var BiliKitDownloadProgressModule = (() => {
     return [...groups.values()].sort((left, right) => left.collectionIndex - right.collectionIndex);
   }
   function buildDownloadVideoList(catalog = [], collection = [], basePage = null) {
+    const isBangumi = basePage?.downloadScope === "bangumi" || (Array.isArray(catalog) && catalog.some((entry) => entry?.downloadScope === "bangumi"));
     const preparedCollection = prepareDownloadCollectionCatalog(collection, catalog, basePage);
     const confirmedCollection = confirmedDownloadCollectionCatalog(preparedCollection, basePage);
     const collectionEntries = confirmedCollection.length
@@ -11411,7 +11492,20 @@ var BiliKitDownloadProgressModule = (() => {
         current: downloadVideoListEntryIsCurrent(entry, basePage)
       }))
       : [];
-    const episodeEntries = (Array.isArray(catalog) ? catalog : [])
+    const bangumiEntries = isBangumi
+      ? (Array.isArray(catalog) ? catalog : [])
+        .map((entry, index) => normalizeDownloadBangumiEntry(entry, basePage, index))
+        .sort((left, right) => left.episodeIndex - right.episodeIndex)
+        .map((entry) => ({
+          ...entry,
+          kind: "bangumi-episode",
+          downloadScope: "bangumi",
+          listKey: `bangumi:${entry.seasonId || basePage?.seasonId || "unknown"}:${entry.epId || entry.videoId || entry.cid || entry.episodeIndex}`,
+          label: downloadVideoListLabel(entry),
+          current: downloadVideoListEntryIsCurrent(entry, basePage) || !!entry.current
+        }))
+      : [];
+    const episodeEntries = isBangumi ? [] : (Array.isArray(catalog) ? catalog : [])
       .map((entry) => normalizeDownloadCatalogEntry(entry, basePage))
       .sort((left, right) => left.page - right.page)
       .map((entry) => ({
@@ -11430,6 +11524,12 @@ var BiliKitDownloadProgressModule = (() => {
     const result = [];
     const seenIdentities = new Set();
     const collectionPages = new Set();
+    for (const entry of bangumiEntries) {
+      const identity = downloadVideoListIdentity(entry) || `bangumi:${entry.episodeIndex}`;
+      if (seenIdentities.has(identity)) continue;
+      seenIdentities.add(identity);
+      result.push({ ...entry, listOrder: result.length });
+    }
     for (const entry of collectionEntries) {
       const identity = downloadVideoListIdentity(entry) || `collection:${entry.collectionIndex}:page:${entry.page}`;
       const pageIdentity = `${normalizedDownloadVideoId(entry.videoId || entry.bvid || entry.aid)}:page:${Math.max(1, Number(entry.page) || 1)}`;
@@ -11510,18 +11610,22 @@ var BiliKitDownloadProgressModule = (() => {
     return next;
   }
   function isDownloadVideoListEntryValid(entry) {
-    return entry?.downloadScope === "collection"
-      ? isDownloadCollectionEntryValid(entry)
-      : isDownloadCatalogEntryValid(entry);
+    if (entry?.downloadScope === "collection") return isDownloadCollectionEntryValid(entry);
+    if (entry?.downloadScope === "bangumi") return !!entry.videoId && /^\d+$/.test(String(entry.cid || "")) && /^\d+$/.test(String(entry.epId || ""));
+    return isDownloadCatalogEntryValid(entry);
   }
   function downloadBatchEntryScope(entry) {
-    return entry?.downloadScope === "collection" ? "collection" : "episodes";
+    if (entry?.downloadScope === "collection") return "collection";
+    if (entry?.downloadScope === "bangumi") return "bangumi";
+    return "episodes";
   }
   function downloadBatchScopeForEntries(entries = []) {
     const list = Array.isArray(entries) ? entries : [];
     const hasCollection = list.some((entry) => downloadBatchEntryScope(entry) === "collection");
     const hasEpisodes = list.some((entry) => downloadBatchEntryScope(entry) === "episodes");
-    return hasCollection && hasEpisodes ? "mixed" : hasCollection ? "collection" : hasEpisodes ? "episodes" : "";
+    const hasBangumi = list.some((entry) => downloadBatchEntryScope(entry) === "bangumi");
+    const scopeCount = [hasCollection, hasEpisodes, hasBangumi].filter(Boolean).length;
+    return scopeCount > 1 ? "mixed" : hasCollection ? "collection" : hasBangumi ? "bangumi" : hasEpisodes ? "episodes" : "";
   }
   function downloadTrackCodecKey(track) {
     return String(track?.codecs || "").toLowerCase().split(/[.,]/)[0];
@@ -11654,6 +11758,85 @@ var BiliKitDownloadProgressModule = (() => {
     }
     return { bvid, videoId: normalizedDownloadVideoId(bvid), title, duration };
   }
+  function readDownloadBangumiNextData() {
+    try {
+      const node = document.querySelector("script#__NEXT_DATA__");
+      if (!node) return {};
+      const data = JSON.parse(node.textContent || "{}");
+      const queries = data?.props?.pageProps?.dehydratedState?.queries;
+      const season = Array.isArray(queries)
+        ? queries.map((item) => item?.state?.data).find((item) => item && (item.season_id || item.season_title))
+        : null;
+      return season && typeof season === "object" ? season : {};
+    } catch {
+      return {};
+    }
+  }
+  function readDownloadBangumiPlayState() {
+    const sources = [window.__PLAYURL_HYDRATE_DATA__, window.__playinfo__, window.__INITIAL_STATE__?.playinfo, window.__INITIAL_STATE__]
+      .filter((source) => source && typeof source === "object");
+    for (const source of sources) {
+      const roots = [source?.result, source?.data?.result, source?.data, source].filter((root) => root && typeof root === "object");
+      for (const root of roots) {
+        const arc = root.arc || root.view_info?.arc || root.video_info?.arc || root.videoData?.arc || {};
+        const episode = root.supplement?.ogv_episode_info || root.play_view_business_info?.episode_info || root.episode_info || root.epInfo || root.episode || {};
+        const season = root.supplement?.ogv_season_info || root.play_view_business_info?.season_info || root.season_info || root.videoData?.season_info || {};
+        const bvid = normalizedDownloadBvid(arc.bvid || root.bvid);
+        const aid = normalizedDownloadAid(arc.aid || root.aid || root.avid || episode.aid);
+        const cid = String(arc.cid || root.cid || episode.cid || root.videoData?.cid || "").match(/^\d+$/)?.[0] || "";
+        const epId = String(episode.ep_id || episode.episode_id || root.ep_id || root.episode_id || root.epId || "").match(/^\d+$/)?.[0] || "";
+        const seasonId = String(season.season_id || root.season_id || root.seasonId || root.videoData?.season_id || "").match(/^\d+$/)?.[0] || "";
+        if (!bvid && !aid && !cid && !epId && !seasonId) continue;
+        const durationValue = Number(root.timelength || root.duration || root.dash?.duration) || 0;
+        return {
+          videoId: normalizedDownloadVideoId(bvid || (aid ? `av${aid}` : "")),
+          bvid,
+          aid,
+          cid,
+          epId,
+          seasonId,
+          episodeTitle: selectDownloadTitle(episode.show_title, episode.title, episode.long_title, episode.index_title),
+          seasonTitle: selectDownloadTitle(season.season_title, season.title, root.season_title, root.seasonTitle),
+          duration: durationValue > 10000 ? durationValue / 1000 : durationValue
+        };
+      }
+    }
+    return {};
+  }
+  function readDownloadBangumiPageIdentity(urlIdentity = parseDownloadPageUrl()) {
+    const state = readDownloadBangumiPlayState();
+    const nextData = readDownloadBangumiNextData();
+    const seasonId = urlIdentity.seasonId || state.seasonId || String(nextData.season_id || "").match(/^\d+$/)?.[0] || "";
+    const epId = urlIdentity.epId || state.epId;
+    const videoId = state.videoId || "";
+    const bvid = state.bvid || normalizedDownloadBvid(videoId);
+    const aid = state.aid || String(videoId || "").match(/^av(\d+)$/)?.[1] || "";
+    const cid = state.cid || "";
+    const seasonTitle = selectDownloadTitle(nextData.season_title, state.seasonTitle, readDownloadPageTitle()) ||
+      normalizeDownloadTitle(document.title).replace(/[-_]番剧.*$/i, "");
+    const title = selectDownloadTitle(state.episodeTitle, nextData.title, seasonTitle) || videoId || "Bilibili 视频";
+    const routeKey = `${urlIdentity.routeKey || `${location.origin.toLowerCase()}${location.pathname}`}|season=${seasonId || "unknown"}|ep=${epId || "unknown"}|cid=${cid || "unknown"}`;
+    return {
+      ...urlIdentity,
+      downloadScope: "bangumi",
+      seasonId,
+      epId,
+      videoId,
+      bvid,
+      aid,
+      cid,
+      title,
+      filenameTitle: seasonTitle || title,
+      seasonTitle: seasonTitle || title,
+      duration: Number(state.duration) || 0,
+      page: 1,
+      requiresCid: false,
+      urlVideoId: videoId,
+      stateVideoId: videoId,
+      stateMatchesUrl: true,
+      routeKey
+    };
+  }
   function readCurrentDownloadPlayerDuration() {
     try {
       const playerVideo = document.querySelector(".bpx-player-container video, .bilibili-player-video video");
@@ -11676,6 +11859,7 @@ var BiliKitDownloadProgressModule = (() => {
   }
   function currentDownloadPageIdentity() {
     const urlIdentity = parseDownloadPageUrl();
+    if (urlIdentity.downloadScope === "bangumi") return readDownloadBangumiPageIdentity(urlIdentity);
     const state = window.__INITIAL_STATE__ || {};
     const videoData = state.videoData || state.videoInfo || state.epInfo || state.data?.videoData || {};
     const documentIdentity = readDownloadDocumentIdentity();
@@ -11729,6 +11913,13 @@ var BiliKitDownloadProgressModule = (() => {
       duration: metadataDuration || playerDuration,
       playerDuration,
       metadataDuration,
+      downloadScope: "episodes",
+      seasonId: "",
+      epId: "",
+      filenameTitle: selectDownloadTitle(
+        stateMatchesUrl ? videoData.title : "",
+        documentMatchesUrl ? documentIdentity.title : ""
+      ) || (urlIdentity.videoId ? urlIdentity.videoId : "Bilibili 视频"),
       requiresCid: pages.length > 1,
       urlVideoId: urlIdentity.videoId,
       stateVideoId,
@@ -11745,6 +11936,10 @@ var BiliKitDownloadProgressModule = (() => {
     if (pageVideoId && !snapshotVideoId) return false;
     if (page.cid && snapshot.cid && String(page.cid) !== String(snapshot.cid)) return false;
     if (page.cid && !snapshot.cid) return false;
+    if (page.downloadScope === "bangumi") {
+      if (page.seasonId && snapshot.seasonId && String(page.seasonId) !== String(snapshot.seasonId)) return false;
+      if (page.epId && snapshot.epId && String(page.epId) !== String(snapshot.epId)) return false;
+    }
     const pageUrl = new URL(location.href);
     const explicitPage = Number(pageUrl.searchParams.get("p")) || 0;
     if (explicitPage > 0 && Number(snapshot.page) !== explicitPage) return false;
@@ -11764,6 +11959,10 @@ var BiliKitDownloadProgressModule = (() => {
       const routeVideoId = routeIdentity.videoId;
       const snapshotVideoId = normalizedDownloadVideoId(snapshot.videoId || snapshot.bvid);
       if (routeVideoId && snapshotVideoId && !downloadPageIdentityMatches(routeIdentity, snapshotVideoId, snapshot.aid)) return false;
+      if (routeIdentity.downloadScope === "bangumi") {
+        if (routeIdentity.seasonId && snapshot.seasonId && String(routeIdentity.seasonId) !== String(snapshot.seasonId)) return false;
+        if (routeIdentity.epId && snapshot.epId && String(routeIdentity.epId) !== String(snapshot.epId)) return false;
+      }
       const explicitPage = Number(route.searchParams.get("p")) || 0;
       if (explicitPage > 0 && Number(snapshot.page) !== explicitPage) return false;
       return !routeVideoId || !!snapshotVideoId;
@@ -11772,19 +11971,22 @@ var BiliKitDownloadProgressModule = (() => {
     }
   }
   function parseDownloadRequestIdentity(requestUrl) {
-    if (!requestUrl) return { videoId: "", bvid: "", aid: "", cid: "" };
+    if (!requestUrl) return { videoId: "", bvid: "", aid: "", cid: "", epId: "", seasonId: "" };
     try {
       const url = new URL(requestUrl, location.href);
-      if (url.hostname.toLowerCase() !== "api.bilibili.com") return { videoId: "", bvid: "", aid: "", cid: "" };
+      if (url.hostname.toLowerCase() !== "api.bilibili.com") return { videoId: "", bvid: "", aid: "", cid: "", epId: "", seasonId: "" };
       if (!/\/(?:x\/player\/(?:wbi\/)?playurl|pgc\/player\/(?:web\/(?:v2\/)?|api\/)playurl|pugv\/player\/web\/playurl)(?:\/|$)/i.test(url.pathname)) {
-        return { videoId: "", bvid: "", aid: "", cid: "" };
+        return { videoId: "", bvid: "", aid: "", cid: "", epId: "", seasonId: "" };
       }
       const bvid = String(url.searchParams.get("bvid") || "").match(/^BV[0-9A-Za-z]+$/i)?.[0] || "";
       const aid = normalizedDownloadAid(url.searchParams.get("aid") || url.searchParams.get("avid"));
       const videoId = normalizedDownloadVideoId(bvid || (aid ? `av${aid}` : ""));
-      return { videoId, bvid: normalizedDownloadBvid(bvid), aid, cid: String(url.searchParams.get("cid") || "") };
+      const cid = String(url.searchParams.get("cid") || "");
+      const epId = String(url.searchParams.get("ep_id") || "").match(/^\d+$/)?.[0] || "";
+      const seasonId = String(url.searchParams.get("season_id") || "").match(/^\d+$/)?.[0] || "";
+      return { videoId, bvid: normalizedDownloadBvid(bvid), aid, cid, epId, seasonId };
     } catch {
-      return { videoId: "", bvid: "", aid: "", cid: "" };
+      return { videoId: "", bvid: "", aid: "", cid: "", epId: "", seasonId: "" };
     }
   }
   function downloadEndpoint(requestUrl) {
@@ -11803,12 +12005,18 @@ var BiliKitDownloadProgressModule = (() => {
   function resolveDownloadIdentity(data, requestUrl = "") {
     const page = currentDownloadPageIdentity();
     const request = parseDownloadRequestIdentity(requestUrl);
+    const isBangumi = page.downloadScope === "bangumi" || !!request.epId || !!request.seasonId;
+    const responseArc = data?.arc || data?.view_info?.arc || data?.video_info?.arc || {};
+    const responseEpisode = data?.episode_info || data?.episode || data?.view_info?.episode_info || {};
+    const responseSeason = data?.season_info || data?.season || data?.view_info?.season_info || {};
     const response = {
-      bvid: String(data?.bvid || data?.view_info?.bvid || data?.video_info?.bvid || "").match(/^BV[0-9A-Za-z]+$/i)?.[0] || "",
-      aid: normalizedDownloadAid(data?.aid || data?.avid || data?.view_info?.aid || data?.video_info?.aid),
+      bvid: String(responseArc.bvid || data?.bvid || data?.view_info?.bvid || data?.video_info?.bvid || "").match(/^BV[0-9A-Za-z]+$/i)?.[0] || "",
+      aid: normalizedDownloadAid(responseArc.aid || data?.aid || data?.avid || data?.view_info?.aid || data?.video_info?.aid),
       // B 站当前播放页的 SSR __playinfo__.data 通常没有 cid 字段，
       // 但会下发 last_play_cid；如果只读 cid，会把真实当前轨道误判成“身份未确认”。
-      cid: String(data?.view_info?.cid || data?.cid || data?.video_info?.cid || "")
+      cid: String(responseArc.cid || data?.view_info?.cid || data?.cid || data?.video_info?.cid || ""),
+      epId: String(responseEpisode.ep_id || responseEpisode.episode_id || data?.ep_id || data?.episode_id || data?.view_info?.ep_id || "").match(/^\d+$/)?.[0] || "",
+      seasonId: String(responseSeason.season_id || data?.season_id || data?.view_info?.season_id || "").match(/^\d+$/)?.[0] || ""
     };
     response.videoId = normalizedDownloadVideoId(response.bvid || (response.aid ? `av${response.aid}` : ""));
     // last_play_cid 属于页面上一次播放状态，不是当前 playurl 响应的可靠身份。
@@ -11817,6 +12025,10 @@ var BiliKitDownloadProgressModule = (() => {
     if (!response.videoId && !request.videoId && page.videoId && page.stateMatchesUrl) response.videoId = normalizedDownloadVideoId(data?.last_play_bvid || data?.lastPlayBvid || page.videoId);
     response.bvid = normalizedDownloadBvid(response.videoId || response.bvid);
     const reject = (reason) => ({ ok: false, reason });
+    if (isBangumi && request.epId && page.epId && request.epId !== String(page.epId)) return reject("request-episode-id-mismatch");
+    if (isBangumi && response.epId && page.epId && response.epId !== String(page.epId)) return reject("response-episode-id-mismatch");
+    if (isBangumi && request.seasonId && page.seasonId && request.seasonId !== String(page.seasonId)) return reject("request-season-id-mismatch");
+    if (isBangumi && response.seasonId && page.seasonId && response.seasonId !== String(page.seasonId)) return reject("response-season-id-mismatch");
     if (request.cid && response.cid && request.cid !== response.cid) return reject("request-response-cid-mismatch");
     if (request.videoId && response.videoId && !downloadVideoIdentityMatches(request.videoId, request.aid, response.videoId, response.aid)) return reject("request-response-video-id-mismatch");
     if (page.cid && (request.cid || response.cid) && (request.cid || response.cid) !== page.cid) return reject("page-cid-mismatch");
@@ -11838,7 +12050,7 @@ var BiliKitDownloadProgressModule = (() => {
       return reject("page-duration-mismatch");
     }
     const cid = response.cid || request.cid || page.cid;
-    const videoId = normalizedDownloadVideoId(page.urlVideoId || response.videoId || request.videoId || page.videoId);
+    const videoId = normalizedDownloadVideoId(page.urlVideoId || (isBangumi ? page.videoId : "") || response.videoId || request.videoId || page.videoId);
     const bvid = normalizedDownloadBvid(response.bvid || request.bvid || page.bvid || videoId);
     const aid = normalizedDownloadAid(response.aid || request.aid || page.aid || String(videoId || "").match(/^av(\d+)$/)?.[1]);
     const cidPage = Array.isArray(window.__INITIAL_STATE__?.videoData?.pages)
@@ -11854,6 +12066,11 @@ var BiliKitDownloadProgressModule = (() => {
         page: cidPage || page.page,
         title: page.title,
         duration: responseDuration || page.playerDuration || page.duration,
+        filenameTitle: page.filenameTitle || page.seasonTitle || page.title,
+        downloadScope: isBangumi ? "bangumi" : "episodes",
+        seasonId: page.seasonId || request.seasonId || response.seasonId,
+        epId: page.epId || request.epId || response.epId,
+        episodeIndex: page.episodeIndex || 0,
         routeKey: page.routeKey
       }
     };
@@ -11882,6 +12099,11 @@ var BiliKitDownloadProgressModule = (() => {
       aid: identity.aid,
       cid: identity.cid,
       page: identity.page,
+      filenameTitle: identity.filenameTitle,
+      downloadScope: identity.downloadScope,
+      seasonId: identity.seasonId,
+      epId: identity.epId,
+      episodeIndex: identity.episodeIndex,
       quality: data.quality,
       duration: identity.duration || (durationMs > 0 ? durationMs / 1000 : Number(data.dash?.duration) || 0),
       routeKey: identity.routeKey,
@@ -12032,7 +12254,7 @@ var BiliKitDownloadProgressModule = (() => {
     return MEDIA_PLAYURL_API_RE.test(value) || /\/player\/[^/?#]*playurl/i.test(value);
   }
   const DOWNLOAD_REPLAY_PARAM_KEYS = [
-    "aid", "avid", "bvid", "cid", "qn", "fnval", "fnver", "fourk", "platform",
+    "aid", "avid", "bvid", "cid", "ep_id", "season_id", "qn", "fnval", "fnver", "fourk", "platform",
     "from_client", "web_location", "version_name", "is_main_page", "need_fragment",
     "voice_balance", "app_id", "client_attr", "gaia_source", "isGaiaAvoided", "try_look",
     "otype", "type", "session"
@@ -12047,7 +12269,17 @@ var BiliKitDownloadProgressModule = (() => {
       for (const key of DOWNLOAD_REPLAY_PARAM_KEYS) {
         if (url.searchParams.has(key)) params[key] = url.searchParams.get(key);
       }
-      return { origin: url.origin, pathname: url.pathname, params, videoId: identity.videoId, bvid: identity.bvid, aid: identity.aid, cid: identity.cid };
+      return {
+        origin: url.origin,
+        pathname: url.pathname,
+        params,
+        videoId: identity.videoId,
+        bvid: identity.bvid,
+        aid: identity.aid,
+        cid: identity.cid,
+        epId: identity.epId,
+        seasonId: identity.seasonId
+      };
     } catch {
       return null;
     }
@@ -12058,12 +12290,19 @@ var BiliKitDownloadProgressModule = (() => {
   }
   function downloadRequestMatchesPage(request, page) {
     if (!request || !page) return false;
+    const requestPath = String(request.pathname || "").toLowerCase();
+    const pageIsBangumi = page.downloadScope === "bangumi";
+    const requestIsBangumi = requestPath.includes("/pgc/player/") || !!request.epId || !!request.seasonId;
+    if (pageIsBangumi !== requestIsBangumi) return false;
     const requestVideoId = normalizedDownloadVideoId(request.videoId || request.bvid);
     const pageVideoId = normalizedDownloadVideoId(page.videoId || page.bvid);
     if (pageVideoId && requestVideoId && !downloadPageIdentityMatches(page, requestVideoId, request.aid)) return false;
     if (pageVideoId && !requestVideoId) return false;
     if (page.cid && request.cid && String(page.cid) !== String(request.cid)) return false;
     if (page.cid && !request.cid) return false;
+    if (pageIsBangumi && page.epId && request.epId && String(page.epId) !== String(request.epId)) return false;
+    if (pageIsBangumi && page.epId && !request.epId) return false;
+    if (pageIsBangumi && page.seasonId && request.seasonId && String(page.seasonId) !== String(request.seasonId)) return false;
     return !!(requestVideoId || request.cid);
   }
   function findRecentDownloadPlayurlUrl(page) {
@@ -12081,6 +12320,25 @@ var BiliKitDownloadProgressModule = (() => {
   }
   function downloadPlayurlParams(page, template) {
     const params = { ...(template?.params || {}) };
+    if (page?.downloadScope === "bangumi") {
+      delete params.aid;
+      delete params.bvid;
+      delete params.avid;
+      if (page.aid) params.avid = String(page.aid);
+      else delete params.avid;
+      if (page.cid) params.cid = String(page.cid);
+      else delete params.cid;
+      if (page.epId) params.ep_id = String(page.epId);
+      else delete params.ep_id;
+      if (page.seasonId) params.season_id = String(page.seasonId);
+      else delete params.season_id;
+      params.qn = params.qn || "80";
+      params.fnval = params.fnval || "4048";
+      params.fnver = params.fnver || "0";
+      params.fourk = params.fourk || "1";
+      params.platform = params.platform || "pc";
+      return params;
+    }
     delete params.aid;
     delete params.avid;
     delete params.bvid;
@@ -12104,10 +12362,12 @@ var BiliKitDownloadProgressModule = (() => {
       ? DOWNLOAD_PLAYURL_TEMPLATE
       : null;
     const origin = template?.origin || "https://api.bilibili.com";
-    const pathname = template?.pathname || "/x/player/wbi/playurl";
+    const pathname = page?.downloadScope === "bangumi"
+      ? (template?.pathname && /\/pgc\/player\//i.test(template.pathname) ? template.pathname : "/pgc/player/web/playurl")
+      : template?.pathname || "/x/player/wbi/playurl";
     const url = new URL(origin + pathname);
     const params = downloadPlayurlParams(page, template);
-    const needsWbi = /\/x\/player\/wbi\/playurl$/i.test(pathname);
+    const needsWbi = page?.downloadScope !== "bangumi" && /\/x\/player\/wbi\/playurl$/i.test(pathname);
     if (needsWbi) {
       let signed = signQuery(params);
       if (!signed && typeof window.fetch === "function") {
@@ -12126,16 +12386,21 @@ var BiliKitDownloadProgressModule = (() => {
   async function buildBatchDownloadPlayurlRequest(page) {
     // 不同 BV 合集必须从当前条目的 BV/CID 重新构造官方请求；即使模板恰好
     // 来自合集中的当前 BV，也不能把当前页的签名请求当作另一条任务的身份。
-    const template = page?.downloadScope === "collection" ? null : DOWNLOAD_PLAYURL_TEMPLATE && page?.videoId && downloadVideoIdentityMatches(
+    const template = page?.downloadScope === "collection" ? null : DOWNLOAD_PLAYURL_TEMPLATE && page?.videoId && downloadRequestMatchesPage(
+      DOWNLOAD_PLAYURL_TEMPLATE,
+      page
+    ) && downloadVideoIdentityMatches(
       page.videoId,
       page.aid,
       DOWNLOAD_PLAYURL_TEMPLATE.videoId,
       DOWNLOAD_PLAYURL_TEMPLATE.aid
     ) ? DOWNLOAD_PLAYURL_TEMPLATE : null;
-    const pathname = template?.pathname || "/x/player/wbi/playurl";
+    const pathname = page?.downloadScope === "bangumi"
+      ? (template?.pathname && /\/pgc\/player\//i.test(template.pathname) ? template.pathname : "/pgc/player/web/playurl")
+      : template?.pathname || "/x/player/wbi/playurl";
     const url = new URL((template?.origin || "https://api.bilibili.com") + pathname);
     const params = downloadPlayurlParams(page, template);
-    if (/\/x\/player\/wbi\/playurl$/i.test(pathname)) {
+    if (page?.downloadScope !== "bangumi" && /\/x\/player\/wbi\/playurl$/i.test(pathname)) {
       let signed = signQuery(params);
       if (!signed && typeof window.fetch === "function") {
         try {
@@ -12152,15 +12417,25 @@ var BiliKitDownloadProgressModule = (() => {
   }
   function buildBatchDownloadSnapshot(data, page, requestUrl) {
     const request = parseDownloadRequestIdentity(requestUrl);
-    const responseBvid = normalizedDownloadBvid(data?.bvid || data?.view_info?.bvid || data?.video_info?.bvid);
-    const responseAid = normalizedDownloadAid(data?.aid || data?.avid || data?.view_info?.aid || data?.video_info?.aid);
+    const responseArc = data?.arc || data?.view_info?.arc || data?.video_info?.arc || {};
+    const responseEpisode = data?.episode_info || data?.episode || data?.view_info?.episode_info || {};
+    const responseSeason = data?.season_info || data?.season || data?.view_info?.season_info || {};
+    const responseBvid = normalizedDownloadBvid(responseArc.bvid || data?.bvid || data?.view_info?.bvid || data?.video_info?.bvid);
+    const responseAid = normalizedDownloadAid(responseArc.aid || data?.aid || data?.avid || data?.view_info?.aid || data?.video_info?.aid);
     const responseVideoId = normalizedDownloadVideoId(responseBvid || (responseAid ? `av${responseAid}` : ""));
+    const responseEpId = String(responseEpisode.ep_id || responseEpisode.episode_id || data?.ep_id || data?.episode_id || data?.view_info?.ep_id || "").match(/^\d+$/)?.[0] || "";
+    const responseSeasonId = String(responseSeason.season_id || data?.season_id || data?.view_info?.season_id || "").match(/^\d+$/)?.[0] || "";
+    const isBangumi = page?.downloadScope === "bangumi";
     if (request.videoId && !downloadVideoIdentityMatches(page.videoId, page.aid, request.videoId, request.aid)) throw new Error("播放请求的视频 ID 不匹配");
     if (responseVideoId && !downloadVideoIdentityMatches(page.videoId, page.aid, responseVideoId, responseAid)) throw new Error("播放响应的视频 ID 不匹配");
-    const responseCid = String(data?.cid || data?.view_info?.cid || data?.video_info?.cid || "");
+    if (isBangumi && page.epId && request.epId !== String(page.epId)) throw new Error("番剧播放请求的集 ID 不匹配");
+    if (isBangumi && page.epId && responseEpId && responseEpId !== String(page.epId)) throw new Error("番剧播放响应的集 ID 不匹配");
+    if (isBangumi && page.seasonId && request.seasonId && request.seasonId !== String(page.seasonId)) throw new Error("番剧播放请求的季 ID 不匹配");
+    if (isBangumi && page.seasonId && responseSeasonId && responseSeasonId !== String(page.seasonId)) throw new Error("番剧播放响应的季 ID 不匹配");
+    const responseCid = String(responseArc.cid || data?.cid || data?.view_info?.cid || data?.video_info?.cid || "");
     if (request.cid && request.cid !== String(page.cid)) throw new Error("播放请求的 CID 不匹配");
     if (responseCid && responseCid !== String(page.cid)) throw new Error("播放响应的 CID 不匹配");
-    if (!page.cid) throw new Error("目标分 P 的 CID 不可用");
+    if (!page.cid) throw new Error(isBangumi ? "目标番剧集的 CID 不可用" : "目标分 P 的 CID 不可用");
     const identity = {
       videoId: page.videoId || request.videoId || responseVideoId,
       bvid: page.bvid || request.bvid || responseBvid,
@@ -12168,8 +12443,13 @@ var BiliKitDownloadProgressModule = (() => {
       cid: String(page.cid),
       page: Number(page.page) || 1,
       title: page.title,
+      filenameTitle: page.filenameTitle || page.seasonTitle || page.title,
+      downloadScope: isBangumi ? "bangumi" : "episodes",
+      seasonId: page.seasonId || request.seasonId || responseSeasonId,
+      epId: page.epId || request.epId || responseEpId,
+      episodeIndex: page.episodeIndex || 0,
       duration: Number(data?.timelength) > 0 ? Number(data.timelength) / 1000 : Number(data?.dash?.duration) || Number(page.duration) || 0,
-      routeKey: `${page.videoId || page.bvid}|p=${Number(page.page) || 1}|cid=${page.cid}`
+      routeKey: page.routeKey || `${page.videoId || page.bvid}|${isBangumi ? `season=${page.seasonId || "unknown"}|ep=${page.epId || "unknown"}` : `p=${Number(page.page) || 1}`}|cid=${page.cid}`
     };
     return buildDownloadSnapshotFromPlayinfo(data, identity);
   }
@@ -12214,7 +12494,31 @@ var BiliKitDownloadProgressModule = (() => {
     if (inDrawer) postDrawer("bk-drawer-download-fetch-status", { state: status, message: String(message || "").slice(0, 180) });
   }
   async function resolveDownloadPageForFetch(page, signal) {
-    if (page.cid) return page;
+    if (page.cid && page.downloadScope !== "bangumi") return page;
+    if (page.downloadScope === "bangumi") {
+      if (!page.epId && !page.seasonId && !page.videoId && !page.cid) throw new Error("当前番剧缺少可识别的集或季 ID");
+      const data = await fetchDownloadBangumiSeasonData(page, signal);
+      const catalog = buildDownloadBangumiCatalogFromSeason(data, page);
+      const selected = catalog.find((entry) => page.epId && String(entry.epId) === String(page.epId))
+        || catalog.find((entry) => page.bvid && entry.bvid === page.bvid)
+        || catalog.find((entry) => page.cid && String(entry.cid) === String(page.cid));
+      if (!selected?.cid) throw new Error("当前番剧集的 CID 不可用");
+      return {
+        ...page,
+        seasonId: selected.seasonId || page.seasonId,
+        epId: selected.epId || page.epId,
+        episodeIndex: selected.episodeIndex,
+        videoId: selected.videoId || page.videoId,
+        bvid: selected.bvid || page.bvid,
+        aid: selected.aid || page.aid,
+        cid: selected.cid,
+        title: selected.title || page.title,
+        filenameTitle: selected.filenameTitle || page.filenameTitle,
+        seasonTitle: selected.filenameTitle || page.seasonTitle,
+        duration: selected.duration || page.duration,
+        page: 1
+      };
+    }
     if (!page.videoId) throw new Error("当前页面没有可识别的视频 ID");
     const viewUrl = new URL("https://api.bilibili.com/x/web-interface/view");
     if (page.bvid) viewUrl.searchParams.set("bvid", page.bvid);
@@ -12542,6 +12846,9 @@ var BiliKitDownloadProgressModule = (() => {
     return av ? `AV${av[1]}` : "video";
   }
   function downloadFilenamePage(model) {
+    if (model?.downloadScope === "bangumi") {
+      return `E${String(Math.max(1, Number(model?.episodeIndex) || 1)).padStart(2, "0")}`;
+    }
     const collectionIndex = Math.max(0, Math.floor(Number(model?.collectionIndex) || 0));
     if (collectionIndex > 0) {
       const collection = `C${String(collectionIndex).padStart(2, "0")}`;
@@ -12808,7 +13115,7 @@ var BiliKitDownloadProgressModule = (() => {
         const retry = document.createElement("button");
         retry.type = "button";
         retry.className = "bk-dw-task-action";
-        retry.textContent = `重试此${task.batchScope === "collection" ? " C" : " P"}`;
+        retry.textContent = `重试此${task.batchScope === "collection" ? " C" : task.batchScope === "bangumi" ? " E" : " P"}`;
         retry.addEventListener("click", () => task.retry());
         card.appendChild(retry);
       }
@@ -13118,35 +13425,57 @@ var BiliKitDownloadProgressModule = (() => {
     task.fileSizeEstimateBytes = task._downloadParts.reduce((sum, part) => sum + part.estimated, 0);
     task.message = `${note ? `${note}；` : ""}正在下载 ${selected.length} 条轨道`;
     renderDownloadTasks();
-    const jobs = selected.map((track, index) => gmDownloadTrack(track, files[index], task, (event) => {
-      if (event.lengthComputable && event.total) progress[index] = event.loaded / event.total;
-      updateDownloadPartProgress(task, index, event.loaded, event.lengthComputable ? event.total : task._downloadParts[index]?.estimated || 0);
-      task.saveProgress = task.downloadProgress;
-      task.overallProgress = task.downloadProgress * 0.95 + task.saveProgress * 0.05;
-      task.message = selected.map((item, i) => `${item.kind === "video" ? "视频" : "音频"} ${Math.round(progress[i] * 100)}%`).join(" · ");
-      updateDownloadTask(task, {});
-    }, index));
-    Promise.allSettled(jobs).then((results) => {
-      if (task.status === "canceled") return;
-      const success = results.filter((result) => result.status === "fulfilled").map((result) => result.value);
-      const failed = results.filter((result) => result.status === "rejected");
-      const errors = failed.length;
-      const failureMessage = failed
-        .map((result) => result.reason instanceof Error ? result.reason.message : "下载失败")
-        .map((message) => message.replace(/https?:\/\/\S+/gi, "媒体资源").replace(/[?&](?:[a-z0-9_]+)=\S+/gi, "[签名参数]").slice(0, 180))
-        .filter(Boolean)
-        .join("；");
-      const state = errors === 0 ? "complete" : success.length ? "partial" : "error";
-      updateDownloadTask(task, {
-        status: state,
-        downloadProgress: state === "complete" ? 1 : task.downloadProgress,
-        saveProgress: state === "complete" ? 1 : task.saveProgress,
-        progress: state === "complete" ? 100 : task.progress,
-        message: success.length
-          ? `已提交 ${success.length} 个文件${errors ? `，${errors} 个失败：${failureMessage || "资源不可用"}` : ""}：${success.join("、")}`
-          : failureMessage || "下载失败；地址可能过期、没有权限或网络不可用。"
-      });
-    });
+    const remoteGate = task.remoteDownloadGate;
+    const remoteController = remoteGate ? new AbortController() : null;
+    let releaseRemote = null;
+    let cancelRemote = null;
+    const run = async () => {
+      try {
+        if (remoteGate) {
+          cancelRemote = () => remoteController.abort("任务已取消");
+          task.cancelFunctions.push(cancelRemote);
+          releaseRemote = await remoteGate.acquire(remoteController.signal);
+          removeDownloadCancel(task, cancelRemote);
+          cancelRemote = null;
+          if (task.status === "canceled") return;
+        }
+        const jobs = selected.map((track, index) => gmDownloadTrack(track, files[index], task, (event) => {
+          if (event.lengthComputable && event.total) progress[index] = event.loaded / event.total;
+          updateDownloadPartProgress(task, index, event.loaded, event.lengthComputable ? event.total : task._downloadParts[index]?.estimated || 0);
+          task.saveProgress = task.downloadProgress;
+          task.overallProgress = task.downloadProgress * 0.95 + task.saveProgress * 0.05;
+          task.message = selected.map((item, i) => `${item.kind === "video" ? "视频" : "音频"} ${Math.round(progress[i] * 100)}%`).join(" · ");
+          updateDownloadTask(task, {});
+        }, index));
+        const results = await Promise.allSettled(jobs);
+        if (task.status === "canceled") return;
+        const success = results.filter((result) => result.status === "fulfilled").map((result) => result.value);
+        const failed = results.filter((result) => result.status === "rejected");
+        const errors = failed.length;
+        const failureMessage = failed
+          .map((result) => result.reason instanceof Error ? result.reason.message : "下载失败")
+          .map((message) => message.replace(/https?:\/\/\S+/gi, "媒体资源").replace(/[?&](?:[a-z0-9_]+)=\S+/gi, "[签名参数]").slice(0, 180))
+          .filter(Boolean)
+          .join("；");
+        const state = errors === 0 ? "complete" : success.length ? "partial" : "error";
+        updateDownloadTask(task, {
+          status: state,
+          downloadProgress: state === "complete" ? 1 : task.downloadProgress,
+          saveProgress: state === "complete" ? 1 : task.saveProgress,
+          progress: state === "complete" ? 100 : task.progress,
+          message: success.length
+            ? `已提交 ${success.length} 个文件${errors ? `，${errors} 个失败：${failureMessage || "资源不可用"}` : ""}：${success.join("、")}`
+            : failureMessage || "下载失败；地址可能过期、没有权限或网络不可用。"
+        });
+      } catch (error) {
+        if (task.status !== "canceled") runDownloadTaskError(task, error);
+      } finally {
+        if (cancelRemote) removeDownloadCancel(task, cancelRemote);
+        releaseRemote?.();
+        releaseRemote = null;
+      }
+    };
+    void run();
   }
   function mergeDownloadStats() {
     DOWNLOAD_CAPTURE_STATS.mergeQueued = DOWNLOAD_MERGE_QUEUE.length;
@@ -13234,8 +13563,20 @@ var BiliKitDownloadProgressModule = (() => {
     let worker = null;
     let workerUrl = "";
     let cancelWorker = null;
+    const remoteGate = task.remoteDownloadGate;
+    const remoteController = remoteGate ? new AbortController() : null;
+    let releaseRemote = null;
+    let cancelRemote = null;
     try {
       if (!canRemuxDownload(video, audio)) throw new Error("当前编码无法直通封装；可尝试分轨下载");
+      if (remoteGate) {
+        cancelRemote = () => remoteController.abort("任务已取消");
+        task.cancelFunctions.push(cancelRemote);
+        releaseRemote = await remoteGate.acquire(remoteController.signal);
+        removeDownloadCancel(task, cancelRemote);
+        cancelRemote = null;
+        if (task.status === "canceled") return;
+      }
       task.status = "downloading";
       task.downloadStartedAt = task.downloadStartedAt || downloadNow();
       task.mediaDuration = Number(model.duration) || task.mediaDuration || 0;
@@ -13258,6 +13599,10 @@ var BiliKitDownloadProgressModule = (() => {
           updateDownloadTask(task, { message: `读取音视频轨：视频 ${Math.round(progress[0] * 100)}% · 音频 ${Math.round(progress[1] * 100)}%` });
         }, 1)
       ]);
+      // 番剧的远程媒体槽只覆盖轨道读取；进入本地 Worker 后释放，
+      // 使本地合并池继续按内存预算和最多 4 个并发独立调度。
+      releaseRemote?.();
+      releaseRemote = null;
       if (task.status === "canceled") return;
       const source = DOWNLOAD_WORKER_SOURCE;
       if (!source) throw new Error("当前脚本未包含 MP4 封装 Worker，请重新构建完整脚本");
@@ -13310,6 +13655,9 @@ var BiliKitDownloadProgressModule = (() => {
       if (workerUrl) URL.revokeObjectURL(workerUrl);
       if (task.status === "canceled") return;
       runDownloadTaskError(task, error);
+    } finally {
+      if (cancelRemote) removeDownloadCancel(task, cancelRemote);
+      releaseRemote?.();
     }
   }
   function snapshotMatchesDownloadEpisode(snapshot, entry, basePage) {
@@ -13317,6 +13665,12 @@ var BiliKitDownloadProgressModule = (() => {
     const snapshotId = normalizedDownloadVideoId(snapshot.videoId || snapshot.bvid);
     const entryId = normalizedDownloadVideoId(entry.videoId || entry.bvid || basePage?.videoId);
     return !!entry.cid && String(snapshot.cid) === String(entry.cid) && (!entryId || downloadVideoIdentityMatches(snapshotId, snapshot.aid, entryId, entry.aid || basePage?.aid));
+  }
+  function snapshotMatchesDownloadBangumiEpisode(snapshot, entry, basePage) {
+    if (!snapshot || !entry || snapshot.downloadScope !== "bangumi") return false;
+    if (entry.seasonId && snapshot.seasonId && String(entry.seasonId) !== String(snapshot.seasonId)) return false;
+    if (entry.epId && snapshot.epId && String(entry.epId) !== String(snapshot.epId)) return false;
+    return snapshotMatchesDownloadEpisode(snapshot, entry, basePage);
   }
   function makeDownloadEpisodePage(entry, basePage) {
     return {
@@ -13332,6 +13686,35 @@ var BiliKitDownloadProgressModule = (() => {
       requiresCid: false,
       stateMatchesUrl: true,
       urlVideoId: normalizedDownloadVideoId(entry.videoId || entry.bvid || basePage.videoId)
+    };
+  }
+  function makeDownloadBangumiPage(entry, basePage) {
+    const seasonId = String(entry?.seasonId || basePage?.seasonId || "").match(/^\d+$/)?.[0] || "";
+    const epId = String(entry?.epId || basePage?.epId || "").match(/^\d+$/)?.[0] || "";
+    const episodeIndex = Math.max(1, Number(entry?.episodeIndex) || 1);
+    const videoId = normalizedDownloadVideoId(entry?.videoId || entry?.bvid || basePage?.videoId);
+    const bvid = normalizedDownloadBvid(entry?.bvid || videoId || basePage?.bvid);
+    const aid = normalizedDownloadAid(entry?.aid || String(videoId || "").match(/^av(\d+)$/i)?.[1] || basePage?.aid);
+    const filenameTitle = selectDownloadTitle(entry?.filenameTitle, basePage?.filenameTitle, basePage?.seasonTitle, basePage?.title) || "Bilibili 视频";
+    return {
+      ...basePage,
+      downloadScope: "bangumi",
+      seasonId,
+      epId,
+      episodeIndex,
+      videoId,
+      bvid,
+      aid,
+      cid: String(entry?.cid || ""),
+      page: 1,
+      title: selectDownloadTitle(entry?.title, entry?.part, basePage?.title) || basePage?.title || filenameTitle,
+      filenameTitle,
+      seasonTitle: filenameTitle,
+      duration: Number(entry?.duration) || Number(basePage?.duration) || 0,
+      routeKey: `${basePage?.routeKey || `${location.origin.toLowerCase()}${location.pathname}`}|season=${seasonId || "unknown"}|ep=${epId || "unknown"}|cid=${entry?.cid || "unknown"}`,
+      requiresCid: false,
+      stateMatchesUrl: true,
+      urlVideoId: videoId
     };
   }
   function makeDownloadCollectionPage(entry, basePage) {
@@ -13423,6 +13806,7 @@ var BiliKitDownloadProgressModule = (() => {
       if (context.tasks.has(DOWNLOAD_MERGE_QUEUE[index].task)) DOWNLOAD_MERGE_QUEUE.splice(index, 1);
     }
     context.resolutionGate?.cancel();
+    context.remoteDownloadGate?.cancel();
     mergeDownloadStats();
     for (const task of context.tasks) cancelDownloadTask(task);
     DOWNLOAD_BATCH_CONTEXT = null;
@@ -13442,6 +13826,7 @@ var BiliKitDownloadProgressModule = (() => {
     ));
     if (!selectedEntries.length) return;
     const hasCollection = selectedEntries.some((entry) => downloadBatchEntryScope(entry) === "collection");
+    const hasBangumi = selectedEntries.some((entry) => downloadBatchEntryScope(entry) === "bangumi");
     const batchScope = downloadBatchScopeForEntries(selectedEntries) || scope || "episodes";
     cancelDownloadBatch("新的批量任务已开始");
     const basePage = isPlayPage() ? currentDownloadPageIdentity() : {
@@ -13450,7 +13835,13 @@ var BiliKitDownloadProgressModule = (() => {
       aid: baseModel.aid,
       cid: baseModel.cid,
       page: baseModel.page,
+      downloadScope: baseModel.downloadScope || "episodes",
+      seasonId: baseModel.seasonId || "",
+      epId: baseModel.epId || "",
+      episodeIndex: baseModel.episodeIndex || 0,
       title: baseModel.title,
+      filenameTitle: baseModel.filenameTitle,
+      seasonTitle: baseModel.seasonTitle,
       duration: baseModel.duration,
       routeKey: baseModel.routeKey || `${baseModel.videoId}|p=${baseModel.page}|cid=${baseModel.cid}`
     };
@@ -13463,9 +13854,13 @@ var BiliKitDownloadProgressModule = (() => {
       cancelReason: "",
       scope: batchScope,
       hasCollection,
+      hasBangumi,
       // 合集可能展开为数百个叶子 P。限制的是官方 view/playurl 身份解析，
       // 不是已经交给 GM_download 的分轨下载，也不是独立的 MP4 合并池。
-      resolutionGate: createDownloadBatchResolutionGate(downloadBatchResolutionConcurrency())
+      resolutionGate: createDownloadBatchResolutionGate(downloadBatchResolutionConcurrency(hasBangumi ? "bangumi" : batchScope)),
+      // 番剧接口和媒体地址对同一页面状态更敏感，远程阶段固定最多 2 个；
+      // 普通视频/合集不进入这个闸门。进入本地 MP4 Worker 后会释放该槽位。
+      remoteDownloadGate: hasBangumi ? createDownloadBatchResolutionGate(2) : null
     };
     DOWNLOAD_BATCH_CONTEXT = context;
     DOWNLOAD_CAPTURE_STATS.batchActive = true;
@@ -13478,7 +13873,8 @@ var BiliKitDownloadProgressModule = (() => {
     DOWNLOAD_CAPTURE_STATS.lastCollectionError = "";
     const jobs = selectedEntries.map(async (entry) => {
       const isCollection = downloadBatchEntryScope(entry) === "collection";
-      const itemIndex = isCollection ? entry.collectionIndex : entry.page;
+      const isBangumi = downloadBatchEntryScope(entry) === "bangumi";
+      const itemIndex = isBangumi ? entry.episodeIndex : isCollection ? entry.collectionIndex : entry.page;
       const itemLabel = entry.label || downloadVideoListLabel(entry) || `${isCollection ? "C" : "P"}${String(itemIndex).padStart(2, "0")}`;
       const collectionRootTitle = isCollection
         ? selectDownloadTitle(baseModel.filenameTitle, baseModel.collectionRootTitle, baseModel.collectionTitle, baseModel.title) || baseModel.title
@@ -13489,30 +13885,38 @@ var BiliKitDownloadProgressModule = (() => {
       const initialModel = {
         ...baseModel,
         page: entry.page || 1,
+        episodeIndex: isBangumi ? entry.episodeIndex : 0,
+        seasonId: isBangumi ? entry.seasonId : "",
+        epId: isBangumi ? entry.epId : "",
         collectionIndex: isCollection ? entry.collectionIndex : 0,
         collectionPageCount: isCollection ? entry.collectionPageCount || 1 : 1,
         collectionLabel: isCollection ? itemLabel : "",
-        title: entryTitle,
+        title: isBangumi ? selectDownloadTitle(entry.title, entry.part, baseModel.title) || baseModel.title : entryTitle,
         collectionTitle: isCollection ? collectionRootTitle : baseModel.collectionTitle,
-        filenameTitle: isCollection ? entryTitle : baseModel.filenameTitle,
+        filenameTitle: isBangumi
+          ? selectDownloadTitle(entry.filenameTitle, baseModel.filenameTitle, baseModel.seasonTitle, baseModel.title) || baseModel.title
+          : isCollection ? entryTitle : baseModel.filenameTitle,
         collectionRootTitle: isCollection ? collectionRootTitle : baseModel.collectionRootTitle,
-        downloadScope: isCollection ? "collection" : "episodes",
-        videoId: isCollection ? entry.videoId : basePage.videoId,
-        bvid: isCollection ? entry.bvid : basePage.bvid,
-        aid: isCollection ? entry.aid : basePage.aid,
+        downloadScope: isBangumi ? "bangumi" : isCollection ? "collection" : "episodes",
+        videoId: isBangumi || isCollection ? entry.videoId : basePage.videoId,
+        bvid: isBangumi || isCollection ? entry.bvid : basePage.bvid,
+        aid: isBangumi || isCollection ? entry.aid : basePage.aid,
         cid: entry.cid
       };
       const taskKind = mode === "audio" ? "audio" : mode === "video" ? "video" : mode === "tracks" ? "tracks" : "merge";
       const task = makeDownloadTask(mode === "merge" ? "merge" : "tracks", buildDownloadTaskTitle(initialModel, taskKind, targetVideo, targetAudio));
       task.batchPage = entry.page || 1;
       task.batchIndex = itemIndex;
-      task.batchScope = isCollection ? "collection" : "episodes";
+      task.batchScope = isBangumi ? "bangumi" : isCollection ? "collection" : "episodes";
+      task.remoteDownloadGate = isBangumi ? context.remoteDownloadGate : null;
       task.retry = () => runSelectedDownloadBatch(mode, [entry], baseModel, targetVideo, targetAudio, scope);
       task.message = `${itemLabel}：正在获取对应视频的官方播放轨道…`;
       task.status = "downloading";
       context.tasks.add(task);
       updateDownloadTask(task, {});
-      const valid = isCollection ? isDownloadCollectionEntryValid(entry) : isDownloadCatalogEntryValid(entry);
+      const valid = isBangumi
+        ? isDownloadVideoListEntryValid(entry)
+        : isCollection ? isDownloadCollectionEntryValid(entry) : isDownloadCatalogEntryValid(entry);
       if (!valid) {
         task.retry = null;
         runDownloadTaskError(task, new Error(`${itemLabel} 的视频身份或 CID 不可用，已跳过以避免串片`));
@@ -13527,10 +13931,14 @@ var BiliKitDownloadProgressModule = (() => {
       let releaseResolution = null;
       try {
         releaseResolution = await context.resolutionGate.acquire(controller.signal);
-        const page = isCollection
-          ? await resolveDownloadCollectionPage(entry, basePage, controller.signal, context.viewCache, context.viewControllers)
-          : makeDownloadEpisodePage(entry, basePage);
-        let snapshot = !isCollection && snapshotMatchesDownloadEpisode(baseModel, entry, basePage) ? baseModel : null;
+        const page = isBangumi
+          ? makeDownloadBangumiPage(entry, basePage)
+          : isCollection
+            ? await resolveDownloadCollectionPage(entry, basePage, controller.signal, context.viewCache, context.viewControllers)
+            : makeDownloadEpisodePage(entry, basePage);
+        let snapshot = isBangumi
+          ? snapshotMatchesDownloadBangumiEpisode(baseModel, entry, basePage) ? baseModel : null
+          : !isCollection && snapshotMatchesDownloadEpisode(baseModel, entry, basePage) ? baseModel : null;
         if (!snapshot) snapshot = (await fetchBatchDownloadSnapshot(page, controller.signal)).snapshot;
         if (!DOWNLOAD_BATCH_CONTEXT || DOWNLOAD_BATCH_CONTEXT !== context || context.routeKey !== currentDownloadBatchRouteKey(basePage)) throw new Error("页面已切换，已取消旧下载任务");
         const videoChoice = selectBatchVideoTrack(snapshot.videos, targetVideo);
@@ -13541,13 +13949,17 @@ var BiliKitDownloadProgressModule = (() => {
         if (!audio) throw new Error(audioChoice.reason || `${itemLabel} 没有可用音频轨`);
         const model = {
           ...snapshot,
-          title: isCollection ? selectDownloadTitle(page.title, entry.title, entry.part, snapshot.title, baseModel.title) || baseModel.title : baseModel.title,
+          title: isBangumi || isCollection
+            ? selectDownloadTitle(page.title, entry.title, entry.part, snapshot.title, baseModel.title) || baseModel.title
+            : baseModel.title,
           collectionTitle: isCollection ? collectionRootTitle : snapshot.collectionTitle || baseModel.collectionTitle,
-          filenameTitle: isCollection
-            ? selectDownloadTitle(page.title, entry.title, entry.part, snapshot.title, baseModel.title) || entryTitle
-            : snapshot.filenameTitle || baseModel.filenameTitle,
+          filenameTitle: isBangumi
+            ? selectDownloadTitle(page.filenameTitle, entry.filenameTitle, snapshot.filenameTitle, baseModel.filenameTitle, baseModel.title) || baseModel.title
+            : isCollection
+              ? selectDownloadTitle(page.title, entry.title, entry.part, snapshot.title, baseModel.title) || entryTitle
+              : snapshot.filenameTitle || baseModel.filenameTitle,
           collectionRootTitle: isCollection ? collectionRootTitle : snapshot.collectionRootTitle || baseModel.collectionRootTitle,
-          downloadScope: isCollection ? "collection" : "episodes",
+          downloadScope: isBangumi ? "bangumi" : isCollection ? "collection" : "episodes",
           bvid: page.bvid || snapshot.bvid,
           videoId: page.videoId || snapshot.videoId,
           aid: page.aid || snapshot.aid,
@@ -13555,6 +13967,10 @@ var BiliKitDownloadProgressModule = (() => {
           collectionIndex: isCollection ? entry.collectionIndex : 0,
           collectionPageCount: isCollection ? entry.collectionPageCount || page.collectionPageCount || 1 : 1,
           collectionLabel: isCollection ? itemLabel : "",
+          seasonId: isBangumi ? page.seasonId : "",
+          epId: isBangumi ? page.epId : "",
+          episodeIndex: isBangumi ? page.episodeIndex : 0,
+          seasonTitle: isBangumi ? page.seasonTitle : "",
           cid: page.cid,
           duration: entry.duration || page.duration || snapshot.duration
         };

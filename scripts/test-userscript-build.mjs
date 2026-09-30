@@ -18,6 +18,11 @@ if (!first.equals(second)) throw new Error("userscript 连续构建输出不一�
 
 const worker = await readFile(workerPath);
 const source = second.toString("utf8");
+const earlyPriorityCall = source.indexOf('if (isBilibiliDocument()) installHomeFeedRequestPriority();');
+const cleanupScopeDeclaration = source.indexOf('let activeModuleCleanupScope = null;');
+if (earlyPriorityCall < 0 || cleanupScopeDeclaration < 0 || cleanupScopeDeclaration > earlyPriorityCall) {
+  throw new Error("document-start 首页网络钩子必须在 activeModuleCleanupScope 初始化之后安装");
+}
 const match = source.match(/const DOWNLOAD_WORKER_SOURCE = ("(?:\\.|[^"\\])*");/);
 if (!match) throw new Error("发布 userscript 缺少内嵌 Worker");
 const embedded = Buffer.from(JSON.parse(match[1]));

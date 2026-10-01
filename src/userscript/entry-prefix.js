@@ -185,11 +185,8 @@
     const showGlobalProgress = downloadWorkspaceSetting("showGlobalProgress");
     const entries = {
       speed: { value: formatDownloadSpeed(DOWNLOAD_CAPTURE_STATS.globalDownloadSpeedBytes), show: downloadWorkspaceSetting("showGlobalSpeed") },
-      download: { value: `${Math.round((DOWNLOAD_CAPTURE_STATS.globalDownloadProgress || 0) * 100)}%`, show: showGlobalProgress },
-      save: { value: `${Math.round((DOWNLOAD_CAPTURE_STATS.globalSaveProgress || 0) * 100)}%`, show: showGlobalProgress },
       overall: { value: `${Math.round((DOWNLOAD_CAPTURE_STATS.globalOverallProgress || 0) * 100)}%`, show: showGlobalProgress },
       downloadEta: { value: formatDownloadEta(DOWNLOAD_CAPTURE_STATS.downloadEtaMs), show: downloadWorkspaceSetting("showGlobalEta") },
-      remuxEta: { value: formatDownloadEta(DOWNLOAD_CAPTURE_STATS.remuxEtaMs), show: downloadWorkspaceSetting("showGlobalEta") },
       totalEta: { value: formatDownloadEta(DOWNLOAD_CAPTURE_STATS.totalEtaMs), show: downloadWorkspaceSetting("showGlobalEta") }
     };
     for (const [key, item] of Object.entries(entries)) {
@@ -7231,12 +7228,12 @@
     settings: [
       { key: "showOverview", type: "toggle", label: "显示全局下载摘要", default: true, hint: "显示总速度、综合保存进度和三类预计剩余时间" },
       { key: "showGlobalSpeed", type: "toggle", label: "显示总下载速度", default: true, hint: "按所有活动任务的媒体字节汇总，不包含保存阶段" },
-      { key: "showGlobalEta", type: "toggle", label: "显示全局预计时间", default: true, hint: "显示下载、转码和总计的预计剩余时间" },
-      { key: "showGlobalProgress", type: "toggle", label: "显示全局进度", default: true, hint: "显示下载、保存和综合进度" },
+      { key: "showGlobalEta", type: "toggle", label: "显示全局预计时间", default: true, hint: "显示下载和总计的预计剩余时间" },
+      { key: "showGlobalProgress", type: "toggle", label: "显示全局综合进度", default: true, hint: "只显示按任务媒体大小加权的综合进度" },
       { key: "showFileSize", type: "toggle", label: "显示预计文件大小", default: true, hint: "优先使用响应长度，没有长度时按轨道码率和时长估算" },
       { key: "showTaskProgress", type: "toggle", label: "显示任务阶段进度", default: true, hint: "显示每个任务的下载、转码和总进度" },
       { key: "refreshIntervalMs", type: "number", label: "进度刷新间隔（毫秒）", default: 500, min: 250, max: 2000, step: 50, hint: "范围 250–2000 毫秒；数值越小更新越频繁" },
-      { key: "remuxSampleMinMs", type: "number", label: "转码样本最短耗时（毫秒）", default: 3000, min: 3000, max: 5000, step: 250, hint: "只用超过此阈值的合并任务建立转码时间模型，范围 3000–5000 毫秒" }
+      { key: "remuxSampleMinMs", type: "number", label: "本地合并估算样本最短耗时（毫秒）", default: 3000, min: 3000, max: 5000, step: 250, hint: "只用于总计时间估算，不单独显示预计转码；范围 3000–5000 毫秒" }
     ],
     init: initDownloadWorkspace
   };

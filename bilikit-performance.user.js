@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.6.46
+// @version      0.6.48
 // @author       shiinayane
 // @description  B 站首页性能与 CDN 优化，提供统一视频列表下载工作台，支持合集视频及条目分 P、收藏夹修复和 MP4 音视频封装。
 // @license      MIT
@@ -375,7 +375,7 @@ var BiliKitDownloadProgressModule = (() => {
     }
     function formatBytes(value) {
       const bytes = Math.max(0, Number(value) || 0);
-      if (!bytes) return "\u672A\u77E5\u5927\u5C0F";
+      if (!bytes) return "0 B";
       const units = ["B", "KiB", "MiB", "GiB", "TiB"];
       let index = 0;
       let number = bytes;
@@ -413,6 +413,20 @@ var BiliKitDownloadProgressModule = (() => {
     }
     function taskLoaded(task) {
       return (Array.isArray(task?._downloadParts) ? task._downloadParts : []).reduce((sum, part) => sum + Math.max(0, Number(part.loaded) || 0), 0);
+    }
+    function taskWorkWeight(task) {
+      const parts = Array.isArray(task?._downloadParts) ? task._downloadParts : [];
+      const partBytes = parts.reduce((sum, part) => sum + Math.max(
+        Number(part?.total) || 0,
+        Number(part?.estimated) || 0
+      ), 0);
+      return Math.max(
+        1,
+        partBytes,
+        Number(task?.totalBytes) || 0,
+        Number(task?.fileSizeEstimateBytes) || 0,
+        Number(task?.inputBytes) || 0
+      );
     }
     function taskOverall(task) {
       const download = clamp(task.downloadProgress);
@@ -482,12 +496,14 @@ var BiliKitDownloadProgressModule = (() => {
       try {
         const stored = JSON.parse(storage?.getItem?.("bilikit:download-remux-model") || "null");
         if (stored && typeof stored === "object") {
-          fallback.weightedMsPerByte = Number(stored.weightedMsPerByte) || 0;
-          fallback.weight = Number(stored.weight) || 0;
-          fallback.samples = Array.isArray(stored.samples) ? stored.samples.slice(-3).filter((sample) => sample && Number(sample.elapsedMs) > 0) : [];
+          fallback.samples = Array.isArray(stored.samples) ? stored.samples.slice(-3).filter((sample) => sample && Number(sample.inputBytes) > 0 && Number(sample.elapsedMs) > 0) : [];
         }
       } catch {
       }
+      const inputBytes = fallback.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.inputBytes) || 0), 0);
+      const elapsedMs = fallback.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.elapsedMs) || 0), 0);
+      fallback.weightedMsPerByte = inputBytes > 0 ? elapsedMs / inputBytes : 0;
+      fallback.weight = fallback.samples.length;
       remuxModel = fallback;
       const stats = getStats();
       stats.remuxModelReady = fallback.weightedMsPerByte > 0;
@@ -515,10 +531,6 @@ var BiliKitDownloadProgressModule = (() => {
       const elapsed = Math.max(0, Number(elapsedMs) || 0);
       if (!inputBytes || elapsed < setting("remuxSampleMinMs")) return;
       const model = readRemuxModel();
-      const rate = elapsed / inputBytes;
-      const weight = Math.max(0, Number(model.weight) || 0);
-      model.weightedMsPerByte = ((Number(model.weightedMsPerByte) || 0) * weight + rate) / (weight + 1);
-      model.weight = weight + 1;
       model.samples.push({
         inputBytes,
         mediaDuration: Math.max(0, Number(task.mediaDuration) || 0),
@@ -527,6 +539,10 @@ var BiliKitDownloadProgressModule = (() => {
         at: Date.now()
       });
       model.samples = model.samples.slice(-3);
+      const sampleInputBytes = model.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.inputBytes) || 0), 0);
+      const sampleElapsedMs = model.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.elapsedMs) || 0), 0);
+      model.weightedMsPerByte = sampleInputBytes > 0 ? sampleElapsedMs / sampleInputBytes : 0;
+      model.weight = model.samples.length;
       persistRemuxModel(model);
       const stats = getStats();
       stats.remuxModelReady = model.weightedMsPerByte > 0;
@@ -534,6 +550,7 @@ var BiliKitDownloadProgressModule = (() => {
       stats.lastRemuxSampleMs = elapsed;
     }
     function estimateRemuxMs(task) {
+      if (["saving", "complete"].includes(task?.status)) return 0;
       const model = readRemuxModel();
       const bytes = Math.max(
         Number(task?.inputBytes) || 0,
@@ -554,10 +571,10 @@ var BiliKitDownloadProgressModule = (() => {
       const rate = Number(model.weightedMsPerByte) || 0;
       const predictedTotal = predictions.length ? predictions.reduce((sum, value) => sum + value, 0) / predictions.length : rate ? bytes * rate : 0;
       if (!predictedTotal) return 0;
-      if (task?.status === "remuxing" && Number(task.remuxProgress) > 0) {
-        const elapsed = Math.max(0, now() - (Number(task.remuxStartedAt) || now()));
-        const progressExpected = elapsed / clamp(task.remuxProgress, 0.01, 1);
-        return Math.max(0, Math.max(predictedTotal, progressExpected) - elapsed);
+      if (task?.status === "remuxing") {
+        const progress = clamp(task.remuxProgress);
+        if (progress >= 1) return 0;
+        return Math.max(0, predictedTotal * (1 - progress));
       }
       return Math.max(0, predictedTotal);
     }
@@ -611,18 +628,25 @@ var BiliKitDownloadProgressModule = (() => {
       let loaded = 0;
       let total = 0;
       let remuxProgress = 0;
-      let remuxCount = 0;
+      let remuxWeight = 0;
+      let remuxWeightedProgress = 0;
       let saveProgress = 0;
-      let overallProgress = 0;
+      let saveWeight = 0;
+      let saveWeightedProgress = 0;
+      let overallWeight = 0;
+      let overallWeightedProgress = 0;
       for (const task of visible) {
         normalizeTask(task);
         loaded += task.loadedBytes || 0;
         total += task.totalBytes || 0;
-        overallProgress += task.overallProgress || 0;
-        saveProgress += task.saveProgress || 0;
+        const weight = taskWorkWeight(task);
+        overallWeight += weight;
+        overallWeightedProgress += (task.overallProgress || 0) * weight;
+        saveWeight += weight;
+        saveWeightedProgress += (task.saveProgress || 0) * weight;
         if (taskNeedsRemux(task)) {
-          remuxProgress += task.remuxProgress || 0;
-          remuxCount += 1;
+          remuxWeight += weight;
+          remuxWeightedProgress += (task.remuxProgress || 0) * weight;
         }
       }
       if (sampleSpeed) {
@@ -645,9 +669,9 @@ var BiliKitDownloadProgressModule = (() => {
       stats.globalTotalBytes = total;
       const hasTasks = visible.length > 0;
       stats.globalDownloadProgress = hasTasks ? total > 0 ? clamp(loaded / total) : active.length ? 0 : 1 : 0;
-      stats.globalRemuxProgress = hasTasks ? remuxCount ? clamp(remuxProgress / remuxCount) : 1 : 0;
-      stats.globalSaveProgress = hasTasks ? clamp(saveProgress / visible.length) : 0;
-      stats.globalOverallProgress = hasTasks ? clamp(overallProgress / visible.length) : 0;
+      stats.globalRemuxProgress = hasTasks ? remuxWeight ? clamp(remuxWeightedProgress / remuxWeight) : 1 : 0;
+      stats.globalSaveProgress = hasTasks ? saveWeight ? clamp(saveWeightedProgress / saveWeight) : 0 : 0;
+      stats.globalOverallProgress = hasTasks ? overallWeight ? clamp(overallWeightedProgress / overallWeight) : 0 : 0;
       stats.downloadEtaMs = downloadEta;
       stats.remuxEtaMs = mergeEta.remuxEtaMs;
       const nonMergeDownloadEta = progressSpeed > 0 && nonMergeRemaining > 0 ? nonMergeRemaining / progressSpeed * 1e3 : 0;
@@ -782,11 +806,8 @@ var BiliKitDownloadProgressModule = (() => {
     const showGlobalProgress = downloadWorkspaceSetting("showGlobalProgress");
     const entries = {
       speed: { value: formatDownloadSpeed(DOWNLOAD_CAPTURE_STATS.globalDownloadSpeedBytes), show: downloadWorkspaceSetting("showGlobalSpeed") },
-      download: { value: `${Math.round((DOWNLOAD_CAPTURE_STATS.globalDownloadProgress || 0) * 100)}%`, show: showGlobalProgress },
-      save: { value: `${Math.round((DOWNLOAD_CAPTURE_STATS.globalSaveProgress || 0) * 100)}%`, show: showGlobalProgress },
       overall: { value: `${Math.round((DOWNLOAD_CAPTURE_STATS.globalOverallProgress || 0) * 100)}%`, show: showGlobalProgress },
       downloadEta: { value: formatDownloadEta(DOWNLOAD_CAPTURE_STATS.downloadEtaMs), show: downloadWorkspaceSetting("showGlobalEta") },
-      remuxEta: { value: formatDownloadEta(DOWNLOAD_CAPTURE_STATS.remuxEtaMs), show: downloadWorkspaceSetting("showGlobalEta") },
       totalEta: { value: formatDownloadEta(DOWNLOAD_CAPTURE_STATS.totalEtaMs), show: downloadWorkspaceSetting("showGlobalEta") }
     };
     for (const [key, item] of Object.entries(entries)) {
@@ -2905,7 +2926,7 @@ var BiliKitDownloadProgressModule = (() => {
       }
     })();
   }
-  const VERSION = "0.6.46";
+  const VERSION = "0.6.48";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -7828,12 +7849,12 @@ var BiliKitDownloadProgressModule = (() => {
     settings: [
       { key: "showOverview", type: "toggle", label: "显示全局下载摘要", default: true, hint: "显示总速度、综合保存进度和三类预计剩余时间" },
       { key: "showGlobalSpeed", type: "toggle", label: "显示总下载速度", default: true, hint: "按所有活动任务的媒体字节汇总，不包含保存阶段" },
-      { key: "showGlobalEta", type: "toggle", label: "显示全局预计时间", default: true, hint: "显示下载、转码和总计的预计剩余时间" },
-      { key: "showGlobalProgress", type: "toggle", label: "显示全局进度", default: true, hint: "显示下载、保存和综合进度" },
+      { key: "showGlobalEta", type: "toggle", label: "显示全局预计时间", default: true, hint: "显示下载和总计的预计剩余时间" },
+      { key: "showGlobalProgress", type: "toggle", label: "显示全局综合进度", default: true, hint: "只显示按任务媒体大小加权的综合进度" },
       { key: "showFileSize", type: "toggle", label: "显示预计文件大小", default: true, hint: "优先使用响应长度，没有长度时按轨道码率和时长估算" },
       { key: "showTaskProgress", type: "toggle", label: "显示任务阶段进度", default: true, hint: "显示每个任务的下载、转码和总进度" },
       { key: "refreshIntervalMs", type: "number", label: "进度刷新间隔（毫秒）", default: 500, min: 250, max: 2000, step: 50, hint: "范围 250–2000 毫秒；数值越小更新越频繁" },
-      { key: "remuxSampleMinMs", type: "number", label: "转码样本最短耗时（毫秒）", default: 3000, min: 3000, max: 5000, step: 250, hint: "只用超过此阈值的合并任务建立转码时间模型，范围 3000–5000 毫秒" }
+      { key: "remuxSampleMinMs", type: "number", label: "本地合并估算样本最短耗时（毫秒）", default: 3000, min: 3000, max: 5000, step: 250, hint: "只用于总计时间估算，不单独显示预计转码；范围 3000–5000 毫秒" }
     ],
     init: initDownloadWorkspace
   };
@@ -14477,7 +14498,7 @@ var BiliKitDownloadProgressModule = (() => {
     const overview = document.createElement("div");
     overview.className = "bk-dw-overview";
     overview.dataset.bkDownloadOverview = "";
-    const overviewItems = [["speed", "总下载速度"], ["download", "下载进度"], ["save", "保存进度"], ["overall", "综合进度"], ["downloadEta", "预计下载"], ["remuxEta", "预计转码"], ["totalEta", "预计总计"]];
+    const overviewItems = [["speed", "总下载速度"], ["overall", "综合进度"], ["downloadEta", "预计下载"], ["totalEta", "预计总计"]];
     for (const [key, label] of overviewItems) {
       const item = document.createElement("div");
       item.className = "bk-dw-overview-item";

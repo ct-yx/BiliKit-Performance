@@ -2,7 +2,7 @@
 
 面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用，并在播放器右键菜单中提供当前视频下载工作台。
 
-当前版本：**0.6.46**
+当前版本：**0.6.48**
 
 脚本文件：[bilikit-performance.user.js](bilikit-performance.user.js)
 
@@ -139,7 +139,7 @@ CDN 优选可以进一步设置：
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或其他兼容的 userscript 管理器。
 2. 从 [Raw 地址安装或更新](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)。
-3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.6.46`。
+3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.6.48`。
 
 本项目使用新的脚本名称和 namespace，是独立于旧版 BiliKit Core 的新脚本身份。旧版不会自动升级到本仓库；安装前请先停用旧版，避免两个脚本同时 hook 请求、重复修改页面或产生不稳定行为。
 
@@ -177,7 +177,7 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 - `__BILIKIT_HOME_AD_STATS__`：首页广告楼层检测和隐藏数量。
 - `__BILIKIT_HOME_IMAGE_STATS__`：首页图片 CDN 节点、改写次数、回退和探测状态。
 - `__BILIKIT_CDN_STATS__`：播放 CDN 地域、节点来源、playurl 改写和 MCDN 直连提升情况。
-- `__BILIKIT_DOWNLOAD_STATS__`：当前页面捕获/拒绝计数、主动获取次数与成功/失败次数、获取来源、URL 中识别到的视频 ID、捕获的 BVID/CID、时长、实际命中的 playurl 端点、统一视频列表数量与选择数、合集批量状态、合并排队/运行数量、动态合并并发、内存预算、URL 切换次数及拒绝原因，不包含签名 URL。兼容字段包括 `collectionCount`、`collectionSelectedCount`、`collectionBatchActive`、`collectionBatchMode` 和 `lastCollectionError`；进度字段包括 `activeTaskCount`、`globalDownloadSpeedBytes`、`globalLoadedBytes`、`globalTotalBytes`、`globalDownloadProgress`、`globalRemuxProgress`、`globalSaveProgress`、`globalOverallProgress`、`downloadEtaMs`、`remuxEtaMs`、`totalEtaMs`、`remuxModelReady`、`remuxSampleCount` 和 `lastRemuxSampleMs`。
+- `__BILIKIT_DOWNLOAD_STATS__`：当前页面捕获/拒绝计数、主动获取次数与成功/失败次数、获取来源、URL 中识别到的视频 ID、捕获的 BVID/CID、时长、实际命中的 playurl 端点、统一视频列表数量与选择数、合集批量状态、合并排队/运行数量、动态合并并发、内存预算、URL 切换次数及拒绝原因，不包含签名 URL。兼容字段包括 `collectionCount`、`collectionSelectedCount`、`collectionBatchActive`、`collectionBatchMode` 和 `lastCollectionError`；进度字段包括 `activeTaskCount`、`globalDownloadSpeedBytes`、`globalLoadedBytes`、`globalTotalBytes`、`globalDownloadProgress`、`globalRemuxProgress`、`globalSaveProgress`、`globalOverallProgress`、`downloadEtaMs`、`remuxEtaMs`、`totalEtaMs`、`remuxModelReady`、`remuxSampleCount` 和 `lastRemuxSampleMs`。工作台全局摘要只显示总下载速度、按任务媒体大小加权的综合进度、预计下载和预计总计；预计转码不再单独显示。
 - `__BILIKIT_FAVORITES_FIX_STATS__`：收藏夹官方接口来源、外部元数据请求/命中/未命中次数、最近命中来源、卡片/接口条目数、恢复条目数、更新条目数、缓存条目数、标题/封面恢复数、未解决数、悬停面板数和最近错误；不记录 Cookie 或媒体地址。
 
 这些接口只用于诊断，不会输出 Cookie、access key 或其他认证信息。排查首页慢或缺卡时，应同时确认脚本版本和 B 站自身接口状态，不能只根据浏览器扩展报错归因于本脚本。

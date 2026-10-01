@@ -56,8 +56,14 @@ const {
   estimateDownloadRemuxMs,
   estimateDownloadTaskDownloadMs,
   estimateDownloadMergePoolEta,
-  resetDownloadProgressSampling
+  resetDownloadProgressSampling,
+  formatDownloadBytes,
+  calculateDownloadTaskOverall
 } = controller;
+
+if (formatDownloadBytes(0) !== "0 B" || formatDownloadBytes(null) !== "0 B") {
+  throw new Error(`零字节不能显示为未知大小：${formatDownloadBytes(0)}`);
+}
 
 const task = {
   mode: "merge",
@@ -89,10 +95,6 @@ task.remuxProgress = 0.5;
 task.remuxStartedAt = 0;
 task.saveProgress = 0;
 normalizeDownloadTaskProgress(task);
-collectDownloadProgressStats();
-if (stats.globalDownloadProgress !== 1 || stats.globalRemuxProgress !== 0.5 || stats.globalOverallProgress <= 0.7) {
-  throw new Error("合并阶段全局进度错误：" + JSON.stringify(stats));
-}
 
 const split = {
   mode: "tracks",
@@ -108,6 +110,11 @@ tasks.push(split);
 updateDownloadPartProgress(split, 0, 1000, 2000);
 if (split.remuxProgress !== 1 || split.overallProgress !== 0.475) {
   throw new Error("分轨任务不应进入转码阶段：" + JSON.stringify(split));
+}
+collectDownloadProgressStats();
+const expectedWeightedOverall = (calculateDownloadTaskOverall(task) * 1500 + calculateDownloadTaskOverall(split) * 2000) / 3500;
+if (Math.abs(stats.globalDownloadProgress - 2500 / 3500) > 0.001 || stats.globalRemuxProgress !== 0.5 || Math.abs(stats.globalOverallProgress - expectedWeightedOverall) > 0.001) {
+  throw new Error("合并阶段全局进度错误：" + JSON.stringify(stats));
 }
 
 getSetting = (key, fallback) => key.endsWith("refreshIntervalMs")
@@ -128,6 +135,8 @@ if (!stats.remuxModelReady || stats.remuxSampleCount !== 3 || model.samples.leng
 }
 const eta = estimateDownloadRemuxMs({ ...task, status: "queued", fileSizeEstimateBytes: 1500 });
 if (!(eta > 0)) throw new Error("转码 ETA 未建立：" + eta);
+const remuxRemaining = estimateDownloadRemuxMs({ ...task, status: "remuxing", remuxProgress: 0.5, fileSizeEstimateBytes: 1500 });
+if (!(remuxRemaining > 0 && remuxRemaining < eta)) throw new Error(`当前转码进度没有减少总计估算：${JSON.stringify({ eta, remuxRemaining })}`);
 
 const mergeJobs = [1, 2, 3].map((index) => ({
   task: {

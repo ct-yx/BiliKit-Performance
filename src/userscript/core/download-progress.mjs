@@ -61,7 +61,7 @@ export function createBiliKitDownloadProgressController(options = {}) {
 
   function formatBytes(value) {
     const bytes = Math.max(0, Number(value) || 0);
-    if (!bytes) return "未知大小";
+    if (!bytes) return "0 B";
     const units = ["B", "KiB", "MiB", "GiB", "TiB"];
     let index = 0;
     let number = bytes;
@@ -108,6 +108,21 @@ export function createBiliKitDownloadProgressController(options = {}) {
   function taskLoaded(task) {
     return (Array.isArray(task?._downloadParts) ? task._downloadParts : [])
       .reduce((sum, part) => sum + Math.max(0, Number(part.loaded) || 0), 0);
+  }
+
+  function taskWorkWeight(task) {
+    const parts = Array.isArray(task?._downloadParts) ? task._downloadParts : [];
+    const partBytes = parts.reduce((sum, part) => sum + Math.max(
+      Number(part?.total) || 0,
+      Number(part?.estimated) || 0
+    ), 0);
+    return Math.max(
+      1,
+      partBytes,
+      Number(task?.totalBytes) || 0,
+      Number(task?.fileSizeEstimateBytes) || 0,
+      Number(task?.inputBytes) || 0
+    );
   }
 
   function taskOverall(task) {
@@ -187,14 +202,16 @@ export function createBiliKitDownloadProgressController(options = {}) {
     try {
       const stored = JSON.parse(storage?.getItem?.("bilikit:download-remux-model") || "null");
       if (stored && typeof stored === "object") {
-        fallback.weightedMsPerByte = Number(stored.weightedMsPerByte) || 0;
-        fallback.weight = Number(stored.weight) || 0;
         fallback.samples = Array.isArray(stored.samples)
-          ? stored.samples.slice(-3).filter((sample) => sample && Number(sample.elapsedMs) > 0)
+          ? stored.samples.slice(-3).filter((sample) => sample && Number(sample.inputBytes) > 0 && Number(sample.elapsedMs) > 0)
           : [];
       }
     } catch {
     }
+    const inputBytes = fallback.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.inputBytes) || 0), 0);
+    const elapsedMs = fallback.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.elapsedMs) || 0), 0);
+    fallback.weightedMsPerByte = inputBytes > 0 ? elapsedMs / inputBytes : 0;
+    fallback.weight = fallback.samples.length;
     remuxModel = fallback;
     const stats = getStats();
     stats.remuxModelReady = fallback.weightedMsPerByte > 0;
@@ -224,10 +241,6 @@ export function createBiliKitDownloadProgressController(options = {}) {
     const elapsed = Math.max(0, Number(elapsedMs) || 0);
     if (!inputBytes || elapsed < setting("remuxSampleMinMs")) return;
     const model = readRemuxModel();
-    const rate = elapsed / inputBytes;
-    const weight = Math.max(0, Number(model.weight) || 0);
-    model.weightedMsPerByte = ((Number(model.weightedMsPerByte) || 0) * weight + rate) / (weight + 1);
-    model.weight = weight + 1;
     model.samples.push({
       inputBytes,
       mediaDuration: Math.max(0, Number(task.mediaDuration) || 0),
@@ -236,6 +249,11 @@ export function createBiliKitDownloadProgressController(options = {}) {
       at: Date.now()
     });
     model.samples = model.samples.slice(-3);
+    const sampleInputBytes = model.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.inputBytes) || 0), 0);
+    const sampleElapsedMs = model.samples.reduce((sum, sample) => sum + Math.max(0, Number(sample.elapsedMs) || 0), 0);
+    // 只保留最近三条样本重新计算模型；旧版本累计的历史权重不再继续影响估算。
+    model.weightedMsPerByte = sampleInputBytes > 0 ? sampleElapsedMs / sampleInputBytes : 0;
+    model.weight = model.samples.length;
     persistRemuxModel(model);
     const stats = getStats();
     stats.remuxModelReady = model.weightedMsPerByte > 0;
@@ -244,6 +262,7 @@ export function createBiliKitDownloadProgressController(options = {}) {
   }
 
   function estimateRemuxMs(task) {
+    if (["saving", "complete"].includes(task?.status)) return 0;
     const model = readRemuxModel();
     const bytes = Math.max(
       Number(task?.inputBytes) || 0,
@@ -266,10 +285,12 @@ export function createBiliKitDownloadProgressController(options = {}) {
       ? predictions.reduce((sum, value) => sum + value, 0) / predictions.length
       : rate ? bytes * rate : 0;
     if (!predictedTotal) return 0;
-    if (task?.status === "remuxing" && Number(task.remuxProgress) > 0) {
-      const elapsed = Math.max(0, now() - (Number(task.remuxStartedAt) || now()));
-      const progressExpected = elapsed / clamp(task.remuxProgress, 0.01, 1);
-      return Math.max(0, Math.max(predictedTotal, progressExpected) - elapsed);
+    if (task?.status === "remuxing") {
+      const progress = clamp(task.remuxProgress);
+      if (progress >= 1) return 0;
+      // 不用“已耗时 / 当前进度”反推总时长；Worker 的早期进度并不线性，
+      // 这种反推会在进度很小时把剩余时间放大。只按样本预测总时长和实际进度计算。
+      return Math.max(0, predictedTotal * (1 - progress));
     }
     return Math.max(0, predictedTotal);
   }
@@ -331,18 +352,25 @@ export function createBiliKitDownloadProgressController(options = {}) {
     let loaded = 0;
     let total = 0;
     let remuxProgress = 0;
-    let remuxCount = 0;
+    let remuxWeight = 0;
+    let remuxWeightedProgress = 0;
     let saveProgress = 0;
-    let overallProgress = 0;
+    let saveWeight = 0;
+    let saveWeightedProgress = 0;
+    let overallWeight = 0;
+    let overallWeightedProgress = 0;
     for (const task of visible) {
       normalizeTask(task);
       loaded += task.loadedBytes || 0;
       total += task.totalBytes || 0;
-      overallProgress += task.overallProgress || 0;
-      saveProgress += task.saveProgress || 0;
+      const weight = taskWorkWeight(task);
+      overallWeight += weight;
+      overallWeightedProgress += (task.overallProgress || 0) * weight;
+      saveWeight += weight;
+      saveWeightedProgress += (task.saveProgress || 0) * weight;
       if (taskNeedsRemux(task)) {
-        remuxProgress += task.remuxProgress || 0;
-        remuxCount += 1;
+        remuxWeight += weight;
+        remuxWeightedProgress += (task.remuxProgress || 0) * weight;
       }
     }
     if (sampleSpeed) {
@@ -367,9 +395,9 @@ export function createBiliKitDownloadProgressController(options = {}) {
     stats.globalTotalBytes = total;
     const hasTasks = visible.length > 0;
     stats.globalDownloadProgress = hasTasks ? (total > 0 ? clamp(loaded / total) : active.length ? 0 : 1) : 0;
-    stats.globalRemuxProgress = hasTasks ? (remuxCount ? clamp(remuxProgress / remuxCount) : 1) : 0;
-    stats.globalSaveProgress = hasTasks ? clamp(saveProgress / visible.length) : 0;
-    stats.globalOverallProgress = hasTasks ? clamp(overallProgress / visible.length) : 0;
+    stats.globalRemuxProgress = hasTasks ? (remuxWeight ? clamp(remuxWeightedProgress / remuxWeight) : 1) : 0;
+    stats.globalSaveProgress = hasTasks ? (saveWeight ? clamp(saveWeightedProgress / saveWeight) : 0) : 0;
+    stats.globalOverallProgress = hasTasks ? (overallWeight ? clamp(overallWeightedProgress / overallWeight) : 0) : 0;
     stats.downloadEtaMs = downloadEta;
     stats.remuxEtaMs = mergeEta.remuxEtaMs;
     const nonMergeDownloadEta = progressSpeed > 0 && nonMergeRemaining > 0

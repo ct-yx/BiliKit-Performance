@@ -3993,7 +3993,7 @@
     const overview = document.createElement("div");
     overview.className = "bk-dw-overview";
     overview.dataset.bkDownloadOverview = "";
-    const overviewItems = [["speed", "总下载速度"], ["download", "下载进度"], ["save", "保存进度"], ["overall", "综合进度"], ["downloadEta", "预计下载"], ["remuxEta", "预计转码"], ["totalEta", "预计总计"]];
+    const overviewItems = [["speed", "总下载速度"], ["overall", "综合进度"], ["downloadEta", "预计下载"], ["totalEta", "预计总计"]];
     for (const [key, label] of overviewItems) {
       const item = document.createElement("div");
       item.className = "bk-dw-overview-item";

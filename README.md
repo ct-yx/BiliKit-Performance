@@ -8,6 +8,8 @@
 
 仓库：[ct-yx/BiliKit-Performance](https://github.com/ct-yx/BiliKit-Performance)
 
+详细功能介绍：[docs/FEATURES.md](docs/FEATURES.md)
+
 ## 功能概览
 
 ### 首页信息流

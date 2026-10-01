@@ -3055,6 +3055,38 @@ var BiliKitDownloadProgressModule = (() => {
 .nav-item:hover .gear-ico, .nav-item.sel .gear-ico { color: #fb7299; }
 
 .detail { flex: 1; min-width: 0; overflow: auto; padding: 26px; display: flex; flex-direction: column; }
+
+/* 设置面板滚动条：减弱原生高对比轨道，保留窄屏和键盘操作下的可发现性。 */
+.nav, .detail {
+  --bk-scrollbar-thumb: rgba(255,255,255,.26);
+  --bk-scrollbar-thumb-hover: rgba(255,255,255,.46);
+  --bk-scrollbar-thumb-active: rgba(255,255,255,.58);
+  scrollbar-width: thin;
+  scrollbar-color: var(--bk-scrollbar-thumb) transparent;
+  scrollbar-gutter: stable;
+}
+.nav::-webkit-scrollbar, .detail::-webkit-scrollbar { width: 8px; height: 8px; }
+.nav::-webkit-scrollbar-track, .detail::-webkit-scrollbar-track { background: transparent; }
+.nav::-webkit-scrollbar-thumb, .detail::-webkit-scrollbar-thumb {
+  min-height: 42px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--bk-scrollbar-thumb);
+  background-clip: padding-box;
+}
+.nav:hover, .detail:hover,
+.nav:focus-within, .detail:focus-within {
+  scrollbar-color: var(--bk-scrollbar-thumb-hover) transparent;
+}
+.nav::-webkit-scrollbar-thumb:hover, .detail::-webkit-scrollbar-thumb:hover {
+  background: var(--bk-scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+.nav::-webkit-scrollbar-thumb:active, .detail::-webkit-scrollbar-thumb:active {
+  background: var(--bk-scrollbar-thumb-active);
+  background-clip: padding-box;
+}
+.nav::-webkit-scrollbar-corner, .detail::-webkit-scrollbar-corner { background: transparent; }
 .detail-title { font-size: 19px; font-weight: 600; }
 .detail-desc { font-size: 14px; color: rgba(255,255,255,.5); margin-top: 7px; line-height: 1.55; }
 .fields { margin-top: 22px; display: flex; flex-direction: column; gap: 18px; }
@@ -3125,6 +3157,11 @@ var BiliKitDownloadProgressModule = (() => {
 :host(.bk-theme-light) .head .close { border-color: rgba(0,0,0,.12); background: rgba(0,0,0,.04); color: rgba(0,0,0,.55); }
 :host(.bk-theme-light) .head .close:hover { color: #d6336c; border-color: #d6336c; }
 :host(.bk-theme-light) .main .nav { border-right-color: rgba(0,0,0,.07); }
+:host(.bk-theme-light) .nav, :host(.bk-theme-light) .detail {
+  --bk-scrollbar-thumb: rgba(24,25,28,.22);
+  --bk-scrollbar-thumb-hover: rgba(24,25,28,.38);
+  --bk-scrollbar-thumb-active: rgba(24,25,28,.5);
+}
 :host(.bk-theme-light) .nav-cat { color: rgba(0,0,0,.4); }
 :host(.bk-theme-light) .nav-item:hover { background: rgba(0,0,0,.05); }
 :host(.bk-theme-light) .nav-item.sel { background: rgba(214,51,108,.12); }

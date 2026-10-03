@@ -101,6 +101,8 @@ const context = {
     querySelectorAll: (selector) => selector === "section" ? [seasonSection] : []
   }
 };
+context.canDownloadRequestJson = () => typeof context.window?.fetch === "function";
+context.downloadRequestJson = (url, options = {}) => context.window.fetch(url, options);
 
 vm.runInNewContext(
   `${script.slice(start, end)}
@@ -117,6 +119,7 @@ this.testApi = {
   makeDownloadBangumiPage,
   downloadPlayurlParams,
   buildDownloadPlayurlRequest,
+  fetchBatchDownloadSnapshot,
   buildBatchDownloadPlayurlRequest,
   buildBatchDownloadSnapshot,
   resolveDownloadIdentity,
@@ -229,6 +232,20 @@ if (requestUrl.pathname !== "/pgc/player/web/playurl" || request.source.includes
 }
 for (const [key, expected] of Object.entries({ avid: "26361000", cid: "49053680", ep_id: "232466", season_id: "24588" })) {
   if (requestUrl.searchParams.get(key) !== expected) throw new Error(`PGC 参数 ${key} 错误：${requestUrl.href}`);
+}
+
+context.window.fetch = async () => ({
+  ok: true,
+  status: 200,
+  json: async () => ({ code: 0, result: { is_preview: 1, durl: [{ url: "https://example.invalid/preview" }] } })
+});
+try {
+  await api.fetchBatchDownloadSnapshot(bangumiPage, new AbortController().signal);
+  throw new Error("番剧预览/会员响应不应被当作可下载轨道");
+} catch (error) {
+  if (!/预览或会员资源/.test(String(error?.message || error))) {
+    throw new Error(`番剧无 DASH 响应没有进入明确失败终态：${error?.message || error}`);
+  }
 }
 
 const videoTrack = {

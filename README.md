@@ -2,7 +2,7 @@
 
 面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用，并在播放器右键菜单中提供当前视频下载工作台。
 
-当前版本：**0.6.48**
+当前版本：**0.6.49**
 
 脚本文件：[bilikit-performance.user.js](bilikit-performance.user.js)
 
@@ -21,7 +21,7 @@
 - 默认隐藏首页信息流中的 `.floor-single-card` 广告楼层；不隐藏普通视频卡片，不修改视频悬停预览。
 - 首屏可见封面使用较高图片优先级；视口下方默认预加载约 6 行，可在设置中调整为 4–10 行。预加载使用低优先级和有限队列，不抢占首页推荐接口。
 - 只预加载封面，不改写视频预览内容。
-- 停止滚动约 3 秒后，原生首页会按设置尝试自动加载一批后续内容，默认 10 行，可调整为 5–15 行；每个停止滚动周期最多触发一批。
+- 真实下滑后停止约 3 秒，原生首页会按设置尝试自动加载后续内容，默认 10 行，可调整为 5–15 行；每次停留周期最多触发 3 次原生加载探测，完成后必须继续实际滚动才会开始下一轮。
 - 自动加载探测使用同步触发并立即恢复位置的方式；加载批次期间暂缓首页格式修复，批次结束后集中修复一次，避免页面反复下跳和上提。
 - 如果同步探测没有追加内容，本轮会有限重试后跳过，不使用下一帧可见滚动兜底。
 - 检测到配套 BiliKit Feed 后，自动加载功能会停用，不调用 Feed 私有加载器，也不改动 Feed 脚本。
@@ -116,7 +116,7 @@ CDN 处理分为图片和播放资源两条路径：
 
 - 隐藏首页广告位：默认开启，只处理首页信息流中的 `.floor-single-card`。
 - 封面预加载行数：默认 6 行，范围 4–10 行。
-- 停止滚动后自动加载：默认开启，停止滚动约 3 秒后触发一批原生首页加载。
+- 停止滚动后自动加载：默认开启，真实下滑后停止约 3 秒触发原生首页加载；每次停留周期最多 3 次探测，继续实际滚动后重新计数。
 - 自动加载行数：默认 10 行，范围 5–15 行。
 
 CDN 优选可以进一步设置：
@@ -141,13 +141,15 @@ CDN 优选可以进一步设置：
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或其他兼容的 userscript 管理器。
 2. 从 [Raw 地址安装或更新](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)。
-3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.6.48`。
+3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.6.49`。
 
 本项目使用新的脚本名称和 namespace，是独立于旧版 BiliKit Core 的新脚本身份。旧版不会自动升级到本仓库；安装前请先停用旧版，避免两个脚本同时 hook 请求、重复修改页面或产生不稳定行为。
 
-脚本 metadata 仅匹配 Bilibili，并声明下载工作台实际需要的 Tampermonkey `GM_download`、`GM_xmlhttpRequest` 权限，以及 `bilivideo.com` / `bilivideo.cn` 媒体域名、收藏夹官方元数据域名 `api.bilibili.com` 和失效元数据恢复来源 `www.biliplus.com`、`www.jijidown.com`。收藏夹修复只在收藏夹页请求这些公开元数据；普通浏览、预览和打开下载工作台不会因此读取收藏夹内容。由于首页请求和播放地址处理需要尽早执行，脚本使用 `@run-at document-start` 和 `@sandbox raw`。
+脚本 metadata 仅匹配 Bilibili，并声明下载工作台实际需要的 Tampermonkey `GM_download`、`GM_xmlhttpRequest` 权限，以及 B 站实际返回的 `bilivideo.com` / `bilivideo.cn` / `bilivideo.net` 和签名 `edge.mountaintoys.cn` 媒体域名、收藏夹官方元数据域名 `api.bilibili.com` 和失效元数据恢复来源 `www.biliplus.com`、`www.jijidown.com`。收藏夹修复只在收藏夹页请求这些公开元数据；普通浏览、预览和打开下载工作台不会因此读取收藏夹内容。由于首页请求和播放地址处理需要尽早执行，脚本使用 `@run-at document-start` 和 `@sandbox raw`。
 
 本地开发源码位于 `src/userscript/`，运行 `npm run build` 生成单文件 `bilikit-performance.user.js`；Remux Worker 由构建命令嵌入发布脚本，开发时保留独立源码。修改下载列表或批量任务后，可运行 `npm run test:download-video-list`、`npm run test:download-mixed-batch` 和 `npm run test:download-lifecycle` 回归验证。
+
+仓库结构以 userscript 为业务基准：`src/userscript/` 保存唯一业务源码，`src/extension/` 只保存 Edge MAIN/ISOLATED world 与 Service Worker 适配层，`scripts/lib/primary-bundle.mjs` 负责两种目标共享构建；`extension/` 是可直接加载的生成目录。`npm run build` 会同时更新根目录的 `bilikit-performance.user.js`、Remux Worker 和 Edge 扩展目录，因此 Raw 更新地址始终指向仓库根目录脚本。扩展图标的安全内边距统一由 `src/assets/bilikit-icon.svg` 和 `src/extension/icons/` 维护。
 
 ## 调试接口
 
@@ -173,7 +175,7 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 - `__BILIKIT_HOME_FEED_COORDINATOR_STATS__`：Feed 根节点、新增节点和资源调度情况。
 - `__BILIKIT_HOME_LAYOUT_STATS__`：布局修复的行数和归一化卡片数；正常情况下不应持续增长。
 - `__BILIKIT_HOME_FEED_PRIORITY_STATS__`：预加载窗口、观察图片数、首屏高优先级图片和预加载数量。
-- `__BILIKIT_HOME_AUTO_LOAD_STATS__`：自动加载开关、目标行数、触发次数、实际追加行数和跳过原因。
+- `__BILIKIT_HOME_AUTO_LOAD_STATS__`：自动加载开关、目标行数、探测次数、实际追加行数、已完成批次数、每周期探测上限和停止原因。
 - `__BILIKIT_HOME_AUTO_LOAD_STATS__` 还包括 `batchCount`、`probeMode`、`visibleProbeCount`、`layoutDeferred`、`anchorCorrections`、`maxAnchorDelta` 和 `lastCancelReason`，用于确认自动加载没有产生可见探测跳动。
 - `__BILIKIT_HOME_LAYOUT_STATS__` 还记录自动加载期间延迟的布局修复次数、批次结束后的修复次数和最近一次修复原因。
 - `__BILIKIT_HOME_AD_STATS__`：首页广告楼层检测和隐藏数量。

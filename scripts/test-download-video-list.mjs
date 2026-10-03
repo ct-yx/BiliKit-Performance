@@ -11,6 +11,8 @@ const context = {
   location: { href: "https://www.bilibili.com/video/BV1o6tGzDErU/" },
   window: {}
 };
+context.canDownloadRequestJson = () => typeof context.window?.fetch === "function";
+context.downloadRequestJson = (url, options = {}) => context.window.fetch(url, options);
 vm.runInNewContext(
   `${script.slice(start, end)}\nthis.testApi = { buildDownloadVideoList, buildDownloadVideoListGroups, setDownloadVideoListGroupSelection, downloadVideoListLabel, expandDownloadCollectionCatalog, buildDownloadCollectionCatalogFromView, fetchDownloadCatalogBundle, createDownloadBatchResolutionGate };`,
   context

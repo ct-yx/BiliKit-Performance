@@ -18,10 +18,28 @@ if (!first.equals(second)) throw new Error("userscript 连续构建输出不一�
 
 const worker = await readFile(workerPath);
 const source = second.toString("utf8");
-const earlyPriorityCall = source.indexOf('if (isBilibiliDocument()) installHomeFeedRequestPriority();');
-const cleanupScopeDeclaration = source.indexOf('let activeModuleCleanupScope = null;');
+const earlyPriorityCall = source.indexOf('if (isHomeDocument()) installHomeFeedRequestPriority();');
+const cleanupScopeDeclaration = source.indexOf('var activeModuleCleanupScope = null;');
 if (earlyPriorityCall < 0 || cleanupScopeDeclaration < 0 || cleanupScopeDeclaration > earlyPriorityCall) {
-  throw new Error("document-start 首页网络钩子必须在 activeModuleCleanupScope 初始化之后安装");
+  throw new Error("document-start 首页网络钩子必须使用无 TDZ 的 activeModuleCleanupScope 初始化");
+}
+if (source.includes('let activeModuleCleanupScope = null;')) {
+  throw new Error("发布 userscript 不得用 let 声明 document-start 共享的 activeModuleCleanupScope");
+}
+if (source.includes('if (isBilibiliDocument()) installHomeFeedRequestPriority();')) {
+  throw new Error("首页请求优先级钩子不得在所有 B 站页面 document-start 安装");
+}
+if (!source.includes("const HOME_FEED_AUTO_LOAD_MAX_PROBES = 3;")) {
+  throw new Error("首页自动加载必须保留每周期三次探测上限");
+}
+if (!source.includes('stopAutoLoad("idle-cycle-complete");')) {
+  throw new Error("首页自动加载完成当前停留周期后必须停止调度");
+}
+if (!source.includes('if (!moved || isInternalScroll || !hasUserIntent) return;')) {
+  throw new Error("首页自动加载只能由实际用户滚动重新开启停留周期");
+}
+if (!source.includes('const bangumiPlaybackPage = /^\\/(?:bangumi|cheese)\\/play\\//i.test(location.pathname);')) {
+  throw new Error("CDN 模块缺少番剧页面隔离标记");
 }
 const match = source.match(/const DOWNLOAD_WORKER_SOURCE = ("(?:\\.|[^"\\])*");/);
 if (!match) throw new Error("发布 userscript 缺少内嵌 Worker");

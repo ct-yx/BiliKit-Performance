@@ -36,6 +36,8 @@ const context = {
   window: { __INITIAL_STATE__: state },
   document: { querySelectorAll: () => [] }
 };
+context.canDownloadRequestJson = () => typeof context.window?.fetch === "function";
+context.downloadRequestJson = (url, options = {}) => context.window.fetch(url, options);
 vm.runInNewContext(
   `${script.slice(start, end)}\nthis.testApi = { readDownloadCollectionCatalog, fetchDownloadCollectionCatalog, normalizeDownloadCollectionEntry, isConfirmedDownloadCollectionCatalog, resolveDownloadScopeMode, makeDownloadCollectionPage, resolveDownloadCollectionPage };`,
   context

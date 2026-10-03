@@ -11,8 +11,9 @@
   const SENSITIVE = /accessKey|token|secret|passwd|password/i;
   const SETTINGS_EVENT = "bilikit:settings-changed";
   const BILIKIT_THEME_EVENT = "bilikit:theme-changed";
-  // document-start 会在模块声明完成前安装首页网络钩子，必须先完成初始化。
-  let activeModuleCleanupScope = null;
+  // document-start 会在模块声明完成前安装首页网络钩子。使用 var 避免
+  // Tampermonkey/raw sandbox 在提前执行入口时触发清理作用域的 TDZ。
+  var activeModuleCleanupScope = null;
   const EARLY_HOME_PRECONNECT_ORIGINS = [
     "https://s1.hdslb.com",
     "https://api.bilibili.com",
@@ -88,7 +89,8 @@
   }
   installEarlyHomePreconnect();
   // 请求优先级必须早于 B 站首页 bundle；函数声明会提升，匹配器已在上方初始化。
-  if (isBilibiliDocument()) installHomeFeedRequestPriority();
+  // 该钩子只属于首页，不能在番剧/视频详情页 document-start 时提前接管 fetch/XHR。
+  if (isHomeDocument()) installHomeFeedRequestPriority();
   function readLocal() {
     try {
       return JSON.parse(localStorage.getItem(KEY) || "{}") ?? {};
@@ -2434,6 +2436,38 @@
 .nav-item:hover .gear-ico, .nav-item.sel .gear-ico { color: #fb7299; }
 
 .detail { flex: 1; min-width: 0; overflow: auto; padding: 26px; display: flex; flex-direction: column; }
+
+/* 设置面板滚动条：减弱原生高对比轨道，保留窄屏和键盘操作下的可发现性。 */
+.nav, .detail {
+  --bk-scrollbar-thumb: rgba(255,255,255,.26);
+  --bk-scrollbar-thumb-hover: rgba(255,255,255,.46);
+  --bk-scrollbar-thumb-active: rgba(255,255,255,.58);
+  scrollbar-width: thin;
+  scrollbar-color: var(--bk-scrollbar-thumb) transparent;
+  scrollbar-gutter: stable;
+}
+.nav::-webkit-scrollbar, .detail::-webkit-scrollbar { width: 8px; height: 8px; }
+.nav::-webkit-scrollbar-track, .detail::-webkit-scrollbar-track { background: transparent; }
+.nav::-webkit-scrollbar-thumb, .detail::-webkit-scrollbar-thumb {
+  min-height: 42px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--bk-scrollbar-thumb);
+  background-clip: padding-box;
+}
+.nav:hover, .detail:hover,
+.nav:focus-within, .detail:focus-within {
+  scrollbar-color: var(--bk-scrollbar-thumb-hover) transparent;
+}
+.nav::-webkit-scrollbar-thumb:hover, .detail::-webkit-scrollbar-thumb:hover {
+  background: var(--bk-scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+.nav::-webkit-scrollbar-thumb:active, .detail::-webkit-scrollbar-thumb:active {
+  background: var(--bk-scrollbar-thumb-active);
+  background-clip: padding-box;
+}
+.nav::-webkit-scrollbar-corner, .detail::-webkit-scrollbar-corner { background: transparent; }
 .detail-title { font-size: 19px; font-weight: 600; }
 .detail-desc { font-size: 14px; color: rgba(255,255,255,.5); margin-top: 7px; line-height: 1.55; }
 .fields { margin-top: 22px; display: flex; flex-direction: column; gap: 18px; }
@@ -2504,6 +2538,11 @@
 :host(.bk-theme-light) .head .close { border-color: rgba(0,0,0,.12); background: rgba(0,0,0,.04); color: rgba(0,0,0,.55); }
 :host(.bk-theme-light) .head .close:hover { color: #d6336c; border-color: #d6336c; }
 :host(.bk-theme-light) .main .nav { border-right-color: rgba(0,0,0,.07); }
+:host(.bk-theme-light) .nav, :host(.bk-theme-light) .detail {
+  --bk-scrollbar-thumb: rgba(24,25,28,.22);
+  --bk-scrollbar-thumb-hover: rgba(24,25,28,.38);
+  --bk-scrollbar-thumb-active: rgba(24,25,28,.5);
+}
 :host(.bk-theme-light) .nav-cat { color: rgba(0,0,0,.4); }
 :host(.bk-theme-light) .nav-item:hover { background: rgba(0,0,0,.05); }
 :host(.bk-theme-light) .nav-item.sel { background: rgba(214,51,108,.12); }
@@ -3214,6 +3253,7 @@
     // 非播放页面仍可能消费首页/搜索页悬停预览的 playurl；只安装按 URL 精确匹配的
     // fetch/XHR 响应钩子，不安装全局 JSON.parse，不扫描普通信息流 JSON。
     const playbackPage = typeof isPlayPage === "function" && isPlayPage();
+    const bangumiPlaybackPage = /^\/(?:bangumi|cheese)\/play\//i.test(location.pathname);
     const mediaPage = isBilibiliDocument();
     const configuredHost = cfg.get("targetHost");
     const migratedHost = configuredHost === LEGACY_DEFAULT_CDN_TARGET ? DEFAULT_CDN_TARGET : configuredHost;
@@ -3354,7 +3394,11 @@
       // 但下载工作台要保留 B 站原始签名地址，避免镜像节点按 Host/签名返回另一段内容。
       if (playbackPage) cacheDownloadPlayinfo(root2, "cdn-hook", requestUrl);
       let changed = false;
-      if (activeTargetHost) changed = rewritePlayurl(root2, activeTargetHost, MODE, stats);
+      // PGC 播放地址同时承担季度/集切换和试看鉴权，下载工作台会单独保存
+      // 原始响应；这里不改写番剧播放响应，避免 CDN 优选污染 PGC 播放器状态。
+      if (activeTargetHost && !bangumiPlaybackPage && !(playbackPage && /^\/pgc\/player\//i.test(String(requestUrl ? new URL(requestUrl, location.href).pathname : "")))) {
+        changed = rewritePlayurl(root2, activeTargetHost, MODE, stats);
+      }
       if (changed) stats.lastSource = String(source || "").split("?")[0].slice(0, 160);
       return changed;
     };
@@ -3398,7 +3442,7 @@
         return response;
       }
     };
-    if (playbackPage) {
+    if (playbackPage && !bangumiPlaybackPage) {
       try {
         const parseMark = "__bilikitCdnJsonPatched";
         if (!window.JSON.parse[parseMark]) {
@@ -3439,7 +3483,7 @@
       } catch {
       }
     };
-    if (playbackPage) {
+    if (playbackPage && !bangumiPlaybackPage) {
       installGlobalHook("__playinfo__");
       installGlobalHook("__INITIAL_STATE__");
     }
@@ -4745,6 +4789,7 @@
     if (location.hostname === "passport.bilibili.com") return;
     const homePage = isHomePage();
     const searchPage = isSearchPage();
+    const bangumiPage = /^\/(?:bangumi|cheese)\/play\//i.test(location.pathname);
     if (homePage) {
       // 首页信息流不需要免登录响应改写；保留 B 站原生 fetch/XHR，避免全量 hook
       // 包住推荐接口和悬停预览请求。视频页、动态页仍按原逻辑提供免登录能力。
@@ -4795,31 +4840,34 @@
       (document.head || document.documentElement).appendChild(st);
     } catch {
     }
-    try {
-      // 免登录模式仍隐藏 __playinfo__，但不能把下载工作台需要的当前 DASH
-      // 响应一并丢掉。兼容 SSR 已存在和页面稍后赋值两种时序，只缓存到本页内存。
-      let hiddenPlayinfo = null;
+    if (!bangumiPage) {
       try {
-        hiddenPlayinfo = window.__playinfo__;
+        // 普通视频免登录模式隐藏 __playinfo__，但保留内存快照供下载工作台使用。
+        // PGC 播放器会自己管理这两个全局状态；番剧页不重定义它们，避免破坏
+        // 播放列表初始化和季度切换。
+        let hiddenPlayinfo = null;
+        try {
+          hiddenPlayinfo = window.__playinfo__;
+        } catch {
+        }
+        if (hiddenPlayinfo) cacheDownloadPlayinfo(hiddenPlayinfo, "no-login-global");
+        Object.defineProperty(window, "__playinfo__", {
+          configurable: true,
+          get: () => null,
+          set: (value) => {
+            hiddenPlayinfo = value;
+            cacheDownloadPlayinfo(value, "no-login-global");
+          }
+        });
       } catch {
       }
-      if (hiddenPlayinfo) cacheDownloadPlayinfo(hiddenPlayinfo, "no-login-global");
-      Object.defineProperty(window, "__playinfo__", {
-        configurable: true,
-        get: () => null,
-        set: (value) => {
-          hiddenPlayinfo = value;
-          cacheDownloadPlayinfo(value, "no-login-global");
-        }
-      });
-    } catch {
-    }
-    try {
-      const sc = document.createElement("script");
-      sc.textContent = "const playurlSSRData = {}";
-      (document.head || document.documentElement).appendChild(sc);
-      sc.remove();
-    } catch {
+      try {
+        const sc = document.createElement("script");
+        sc.textContent = "const playurlSSRData = {}";
+        (document.head || document.documentElement).appendChild(sc);
+        sc.remove();
+      } catch {
+      }
     }
     const pureFetch = window.fetch.bind(window);
     warmKeys(pureFetch);
@@ -8023,7 +8071,11 @@
   const HOME_FEED_PRELOAD_MAX = 2600;
   const HOME_FEED_PRELOAD_BATCH_MIN = 12;
   const HOME_FEED_PRELOAD_BATCH_MAX = 36;
+  // 每次真实用户滚动后的闲置周期最多触发三次原生探测；没有新的实际滚动就不重置。
   const HOME_FEED_AUTO_LOAD_MAX_PROBES = 3;
+  // 输入事件与对应 scroll 事件通常在同一帧内到达；窗口过长会把脚本自己的
+  // 后续滚动误认为用户继续操作，从而错误地重新开启闲置计时器。
+  const HOME_FEED_AUTO_LOAD_USER_INTENT_GRACE = 300;
   const HOME_FEED_AUTO_LOAD_TIMEOUT = 8e3;
   const HOME_FEED_AUTO_LOAD_RETRY_DELAY = 800;
   const HOME_FEED_AUTO_LOAD_DOM_SETTLE = 120;
@@ -8453,7 +8505,7 @@
     });
   }
   function installHomeFeedRequestPriority() {
-    if (!isBilibiliDocument() || window.__BILIKIT_HOME_FEED_REQUEST_PRIORITY__) return;
+    if (!isHomeDocument() || window.__BILIKIT_HOME_FEED_REQUEST_PRIORITY__) return;
     if (typeof window.fetch !== "function") return;
     const runtime = getRuntimeCoordinator();
     const networkHooks = runtime.networkHooks();
@@ -9517,6 +9569,9 @@
       maxAnchorDelta: 0,
       lastCancelReason: "",
       completedBatches: 0,
+      maxProbes: HOME_FEED_AUTO_LOAD_MAX_PROBES,
+      stopped: false,
+      stopReason: "",
       appendedRows: 0,
       lastAppendedRows: 0,
       lastResult: "idle",
@@ -9537,6 +9592,10 @@
     let batch = null;
     let pendingRestoreState = null;
     let lastTrustedScrollAt = 0;
+    let autoLoadStopped = false;
+    let userScrollIntentUntil = 0;
+    let internalScrollUntil = 0;
+    let idleRequestedAfterBatch = false;
     const layoutCoordinator = getHomeFeedLayoutCoordinator();
     const getFeedRoot = () => feedRoot?.isConnected ? feedRoot : document.querySelector(".container.is-version8");
     const getCards = (root) => [...root?.children || []].filter((element) => {
@@ -9565,13 +9624,41 @@
       };
     };
     const currentScrollTop = (scroller) => Math.max(0, scroller.scrollTop || window.scrollY || 0);
+    // 以安装时的位置作为基线；页面自身首次派发的 scroll 事件不应被当成用户继续下滑。
+    const initialScroller = document.scrollingElement || document.documentElement;
+    let lastObservedScrollTop = currentScrollTop(initialScroller);
     const setScrollTop = (scroller, value) => {
+      internalScrollUntil = Math.max(internalScrollUntil, Date.now() + HOME_FEED_AUTO_LOAD_INTERNAL_SCROLL_GRACE);
       scroller.scrollTop = value;
       if (Math.abs((scroller.scrollTop || 0) - value) > 1) window.scrollTo(0, value);
     };
     const clearIdleTimer = () => {
       idleTimer?.cancel();
       idleTimer = null;
+    };
+    const stopAutoLoad = (reason) => {
+      autoLoadStopped = true;
+      clearIdleTimer();
+      stats.stopped = true;
+      stats.stopReason = reason;
+      stats.lastSkipReason = reason;
+      stats.lastResult = "stopped";
+    };
+    const resetIdleCycle = () => {
+      autoLoadStopped = false;
+      stats.stopped = false;
+      stats.stopReason = "";
+      stats.lastSkipReason = "";
+      stats.lastResult = "idle";
+    };
+    const markUserScrollIntent = (event) => {
+      if (event?.isTrusted === false) return;
+      userScrollIntentUntil = Date.now() + HOME_FEED_AUTO_LOAD_USER_INTENT_GRACE;
+    };
+    const markKeyboardScrollIntent = (event) => {
+      if (["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End", " ", "Spacebar"].includes(event?.key)) {
+        markUserScrollIntent(event);
+      }
     };
     const skip = (reason) => {
       stats.lastSkipReason = reason;
@@ -9600,6 +9687,15 @@
       stats.completedBatches += 1;
       stats.lastResult = result;
       batch = null;
+      if (result === "user-interrupted") {
+        if (idleRequestedAfterBatch) {
+          idleRequestedAfterBatch = false;
+          scheduleIdle();
+        }
+      } else {
+        idleRequestedAfterBatch = false;
+        stopAutoLoad("idle-cycle-complete");
+      }
       pendingRestoreState = state;
       if (state.layoutToken && layoutCoordinator) {
         layoutCoordinator.afterResume(() => {
@@ -9617,7 +9713,14 @@
     };
     const finishBatch = (state, result) => {
       if (batch !== state) return;
-      if (state.finishing) return;
+      if (state.finishing) {
+        // 用户可以在 DOM 稳定等待期间继续下滑；保留中断结果，完成后重新等待闲置周期。
+        if (result === "user-interrupted") {
+          state.interrupted = true;
+          state.finishResult = result;
+        }
+        return;
+      }
       state.finishing = true;
       if (state.finishTimer) {
         state.finishResult = result;
@@ -9705,7 +9808,7 @@
     };
     const runBatch = () => {
       idleTimer = null;
-      if (batch || !enabled || document.visibilityState !== "visible") {
+      if (autoLoadStopped || batch || !enabled || document.visibilityState !== "visible") {
         if (!batch && document.visibilityState !== "visible") skip("page-hidden");
         return;
       }
@@ -9751,31 +9854,52 @@
     };
     const scheduleIdle = () => {
       clearIdleTimer();
-      if (!enabled || batch || isAppFeedActive() || document.visibilityState !== "visible") return;
+      if (autoLoadStopped || !enabled || batch || isAppFeedActive() || document.visibilityState !== "visible") return;
       idleTimer = runtime.timeout(runBatch, HOME_FEED_AUTO_LOAD_DELAY);
     };
     const onScroll = (event) => {
       if (event && event.isTrusted === false) return;
-      lastTrustedScrollAt = Date.now();
-      if (!batch && pendingRestoreState) {
-        pendingRestoreState.interrupted = true;
-        pendingRestoreState = null;
-        stats.lastCancelReason = "user-scroll-after-load";
-      }
+      const now = Date.now();
+      const scroller = document.scrollingElement || document.documentElement;
+      const currentTop = currentScrollTop(scroller);
+      const previousTop = lastObservedScrollTop;
+      lastObservedScrollTop = currentTop;
+      const moved = previousTop != null && Math.abs(currentTop - previousTop) > 1;
+      const movedDown = previousTop != null && currentTop > previousTop + 1;
+      const hasUserIntent = now <= userScrollIntentUntil;
+      const isInternalScroll = !hasUserIntent && (now <= internalScrollUntil || batch && now <= batch.internalScrollUntil);
+      if (!moved || isInternalScroll || !hasUserIntent) return;
       if (batch) {
+        resetIdleCycle();
         const state = batch;
-        const scroller = document.scrollingElement || document.documentElement;
-        const currentTop = currentScrollTop(scroller);
         const internal = Date.now() <= state.internalScrollUntil
           && (Math.abs(currentTop - state.originalTop) <= 8 || Math.abs(currentTop - state.probeTop) <= 8);
-        if (internal) return;
+        if (internal && !hasUserIntent) return;
         batch.interrupted = true;
+        idleRequestedAfterBatch = true;
         stats.lastCancelReason = "user-scroll";
         finishBatch(batch, "user-interrupted");
         return;
       }
+      // 三轮完成后，只有真正向下移动才解锁新的闲置周期；向上滚动只更新基线。
+      if (!movedDown) return;
+      lastTrustedScrollAt = now;
+      resetIdleCycle();
+      if (pendingRestoreState) {
+        pendingRestoreState.interrupted = true;
+        pendingRestoreState = null;
+        stats.lastCancelReason = "user-scroll-after-load";
+      }
       scheduleIdle();
     };
+    runtime.listen(window, "wheel", markUserScrollIntent, { passive: true, capture: true });
+    runtime.listen(window, "touchstart", markUserScrollIntent, { passive: true, capture: true });
+    runtime.listen(window, "touchmove", markUserScrollIntent, { passive: true, capture: true });
+    runtime.listen(window, "pointerdown", markUserScrollIntent, { passive: true, capture: true });
+    runtime.listen(window, "pointermove", (event) => {
+      if (event?.buttons) markUserScrollIntent(event);
+    }, { passive: true, capture: true });
+    runtime.listen(window, "keydown", markKeyboardScrollIntent, { capture: true });
     runtime.listen(window, "scroll", onScroll, { passive: true });
     runtime.listen(document, "visibilitychange", () => {
       if (document.visibilityState !== "visible") clearIdleTimer();
@@ -9827,7 +9951,7 @@
         type: "toggle",
         label: "停止滚动后自动加载",
         default: true,
-        hint: "停止滚动约 3 秒后触发一批原生首页加载；检测到 BiliKit Feed 时自动停用"
+        hint: "真实下滑后停止约 3 秒，最多触发三次原生加载探测；完成后需继续实际滚动才会开始下一轮"
       },
       {
         key: "autoLoadRows",

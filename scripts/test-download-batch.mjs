@@ -10,10 +10,58 @@ const context = {
   URL,
   location: { href: "https://www.bilibili.com/video/BV1j2YC6iE4i/?p=2" },
   signQuery: (params) => new URLSearchParams(params).toString(),
-  ensureKeys: async () => true
+  ensureKeys: async () => true,
+  normalizeDownloadSnapshot: (source) => ({
+    ...source,
+    videos: Array.isArray(source?.videos) ? source.videos : [],
+    audios: Array.isArray(source?.audios) ? source.audios : []
+  })
+};
+const playurlRequests = [];
+const fallbackVideoTrack = {
+  id: 80,
+  baseUrl: "https://xy123x.bilivideo.com/fallback-video.m4s",
+  codecs: "avc1.640028",
+  mimeType: "video/mp4",
+  height: 1080,
+  width: 1920,
+  bandwidth: 4_000_000
+};
+const fallbackAudioTrack = {
+  id: 30280,
+  baseUrl: "https://xy123x.bilivideo.com/fallback-audio.m4s",
+  codecs: "mp4a.40.2",
+  mimeType: "audio/mp4",
+  bandwidth: 128_000
+};
+context.downloadRequestJson = async (url) => {
+  const parsed = new URL(url);
+  playurlRequests.push(parsed.pathname);
+  if (parsed.pathname === "/x/player/wbi/playurl") {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, data: { dash: { video: [], audio: [] } } })
+    };
+  }
+  if (parsed.pathname === "/x/player/playurl") {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        code: 0,
+        data: {
+          arc: { bvid: "BV1j2YC6iE4i", aid: 10001, cid: 202 },
+          timelength: 120000,
+          dash: { video: [fallbackVideoTrack], audio: [fallbackAudioTrack] }
+        }
+      })
+    };
+  }
+  throw new Error(`意外的播放接口：${parsed.pathname}`);
 };
 vm.runInNewContext(
-  `const DOWNLOAD_MAX_MERGE_CONCURRENCY = 4;\nlet DOWNLOAD_PLAYURL_TEMPLATE = { origin: "https://api.bilibili.com", pathname: "/x/player/wbi/playurl", params: { bvid: "BV1j2YC6iE4i", cid: "202", qn: "80" }, videoId: "BV1j2YC6iE4i", bvid: "BV1j2YC6iE4i", aid: "10001", cid: "202" };\n${script.slice(start, end)}\nthis.testApi = { mergeDownloadEpisodeCatalog, isDownloadCatalogEntryValid, selectBatchVideoTrack, selectBatchAudioTrack, estimateDownloadMemoryBytes, calculateDownloadMergeBudget, buildBatchDownloadPlayurlRequest };`,
+  `const DOWNLOAD_MAX_MERGE_CONCURRENCY = 4;\nlet DOWNLOAD_PLAYURL_TEMPLATE = { origin: "https://api.bilibili.com", pathname: "/x/player/wbi/playurl", params: { bvid: "BV1j2YC6iE4i", cid: "202", qn: "80" }, videoId: "BV1j2YC6iE4i", bvid: "BV1j2YC6iE4i", aid: "10001", cid: "202" };\n${script.slice(start, end)}\nthis.testApi = { mergeDownloadEpisodeCatalog, isDownloadCatalogEntryValid, selectBatchVideoTrack, selectBatchAudioTrack, estimateDownloadMemoryBytes, calculateDownloadMergeBudget, buildBatchDownloadPlayurlRequest, fetchBatchDownloadSnapshot };`,
   context
 );
 
@@ -24,8 +72,26 @@ const {
   selectBatchAudioTrack,
   estimateDownloadMemoryBytes,
   calculateDownloadMergeBudget,
-  buildBatchDownloadPlayurlRequest
+  buildBatchDownloadPlayurlRequest,
+  fetchBatchDownloadSnapshot
 } = context.testApi;
+
+const fallbackPage = {
+  downloadScope: "episodes",
+  videoId: "BV1j2YC6iE4i",
+  bvid: "BV1j2YC6iE4i",
+  aid: "10001",
+  cid: "202",
+  page: 2,
+  title: "普通视频分 P 回退测试"
+};
+const fallbackResult = await fetchBatchDownloadSnapshot(fallbackPage, new AbortController().signal);
+if (playurlRequests.join(",") !== "/x/player/wbi/playurl,/x/player/playurl") {
+  throw new Error(`WBI 空 DASH 没有按预期回退到普通 playurl：${playurlRequests.join(",")}`);
+}
+if (fallbackResult.source !== "batch-legacy-endpoint" || fallbackResult.snapshot.videos.length !== 1 || fallbackResult.snapshot.audios.length !== 1) {
+  throw new Error(`普通视频播放接口回退没有返回可用轨道：${JSON.stringify({ source: fallbackResult.source, snapshot: fallbackResult.snapshot })}`);
+}
 
 const collectionRequest = await buildBatchDownloadPlayurlRequest({
   downloadScope: "collection",

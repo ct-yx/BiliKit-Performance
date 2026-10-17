@@ -21,6 +21,13 @@ const context = {
   },
   GM_xmlhttpRequest(details) {
     requests.push(details.url);
+    if (String(details.url).includes("timeout-check")) {
+      return {
+        abort() {
+          details.onabort?.();
+        }
+      };
+    }
     setTimeout(() => details.onload({
       status: 200,
       statusText: "OK",
@@ -68,6 +75,17 @@ if (!hangingResult.value.ok || hangingPayload.code !== 0 || !hangingFetchAborted
   throw new Error(`页面 fetch 超时回退错误：${JSON.stringify({ response: hangingResult.value, hangingPayload, hangingFetchAborted, requests })}`);
 }
 
+const timeoutResult = await context.testApi.downloadRequestJson(
+  "https://api.bilibili.com/timeout-check",
+  { timeout: 1000 }
+).then(
+  () => ({ type: "response" }),
+  (error) => ({ type: "error", error })
+);
+if (timeoutResult.type !== "error" || timeoutResult.error?.message !== "请求超时") {
+  throw new Error(`扩展请求超时被错误标记为取消：${timeoutResult.error?.message || timeoutResult.type}`);
+}
+
 context.__BILIKIT_EDGE_ADAPTER__ = true;
 context.__BILIKIT_EDGE_GM_XMLHTTPREQUEST__ = context.GM_xmlhttpRequest;
 context.window.fetch = async () => {
@@ -76,7 +94,7 @@ context.window.fetch = async () => {
 const edgeResponse = await context.testApi.downloadRequestJson(
   "https://api.bilibili.com/pgc/player/web/playurl?ep_id=3"
 );
-if (!edgeResponse.ok || requests.length !== 3 || fetchCalls.some((url) => url.includes("ep_id=3"))) {
+if (!edgeResponse.ok || requests.length !== 4 || fetchCalls.some((url) => url.includes("ep_id=3"))) {
   throw new Error(`Edge 扩展没有优先使用 GM/桥接请求：${JSON.stringify({ edgeResponse, requests, fetchCalls })}`);
 }
 

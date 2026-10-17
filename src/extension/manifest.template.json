@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "BiliKit Performance",
+  "version": "__VERSION__",
+  "description": "B 站首页性能与 CDN 优化、视频下载工作台和收藏夹失效视频修复。",
+  "author": "ct-yx",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "downloads"
+  ],
+  "host_permissions": [
+    "*://*.bilibili.com/*",
+    "*://bilibili.com/*",
+    "*://*.bilivideo.com/*",
+    "*://*.bilivideo.cn/*",
+    "*://*.bilivideo.net/*",
+    "*://edge.mountaintoys.cn/*",
+    "*://www.biliplus.com/*",
+    "*://www.jijidown.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "BiliKit Performance",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.bilibili.com/*",
+        "*://bilibili.com/*"
+      ],
+      "js": ["content-bridge.js"],
+      "all_frames": true,
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": [
+        "*://*.bilibili.com/*",
+        "*://bilibili.com/*"
+      ],
+      "js": ["content-main.js"],
+      "all_frames": true,
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}

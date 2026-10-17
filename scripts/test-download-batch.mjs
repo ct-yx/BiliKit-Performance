@@ -61,7 +61,7 @@ context.downloadRequestJson = async (url) => {
   throw new Error(`意外的播放接口：${parsed.pathname}`);
 };
 vm.runInNewContext(
-  `const DOWNLOAD_MAX_MERGE_CONCURRENCY = 4;\nlet DOWNLOAD_PLAYURL_TEMPLATE = { origin: "https://api.bilibili.com", pathname: "/x/player/wbi/playurl", params: { bvid: "BV1j2YC6iE4i", cid: "202", qn: "80" }, videoId: "BV1j2YC6iE4i", bvid: "BV1j2YC6iE4i", aid: "10001", cid: "202" };\n${script.slice(start, end)}\nthis.testApi = { mergeDownloadEpisodeCatalog, isDownloadCatalogEntryValid, selectBatchVideoTrack, selectBatchAudioTrack, estimateDownloadMemoryBytes, calculateDownloadMergeBudget, buildBatchDownloadPlayurlRequest, fetchBatchDownloadSnapshot };`,
+  `const DOWNLOAD_JSON_TIMEOUT = 15000;\nconst DOWNLOAD_BATCH_RESOLUTION_TIMEOUT = 45000;\nconst DOWNLOAD_MAX_MERGE_CONCURRENCY = 4;\nlet DOWNLOAD_PLAYURL_TEMPLATE = { origin: "https://api.bilibili.com", pathname: "/x/player/wbi/playurl", params: { bvid: "BV1j2YC6iE4i", cid: "202", qn: "80" }, videoId: "BV1j2YC6iE4i", bvid: "BV1j2YC6iE4i", aid: "10001", cid: "202" };\n${script.slice(start, end)}\nthis.testApi = { mergeDownloadEpisodeCatalog, isDownloadCatalogEntryValid, selectBatchVideoTrack, selectBatchAudioTrack, estimateDownloadMemoryBytes, calculateDownloadMergeBudget, buildBatchDownloadPlayurlRequest, fetchBatchDownloadSnapshot };`,
   context
 );
 

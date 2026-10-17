@@ -90,7 +90,7 @@ export function createBiliKitDownloadProgressController(options = {}) {
   }
 
   function taskNeedsRemux(task) {
-    return task?.mode === "merge";
+    return task?.mode === "merge" || task?.mode === "audio";
   }
 
   function taskIsActive(task) {

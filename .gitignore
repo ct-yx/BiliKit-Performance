@@ -1,2 +1,4 @@
 /node_modules/
+/dist/
+/BiliKit-Performance-edge-v*.zip
 .DS_Store

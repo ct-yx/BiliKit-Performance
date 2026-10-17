@@ -33,17 +33,17 @@ const context = {
   URL,
   AbortController,
   location: { href: "https://www.bilibili.com/video/BV1NsVh6eE1o/" },
-  window: { __INITIAL_STATE__: state },
+  window: { __INITIAL_STATE__: state, fetch: async () => ({ ok: false, status: 500, json: async () => ({}) }) },
   document: { querySelectorAll: () => [] }
 };
 context.canDownloadRequestJson = () => typeof context.window?.fetch === "function";
 context.downloadRequestJson = (url, options = {}) => context.window.fetch(url, options);
 vm.runInNewContext(
-  `${script.slice(start, end)}\nthis.testApi = { readDownloadCollectionCatalog, fetchDownloadCollectionCatalog, normalizeDownloadCollectionEntry, isConfirmedDownloadCollectionCatalog, resolveDownloadScopeMode, makeDownloadCollectionPage, resolveDownloadCollectionPage };`,
+  `const DOWNLOAD_JSON_TIMEOUT = 15000;\nconst DOWNLOAD_BATCH_RESOLUTION_TIMEOUT = 45000;\n${script.slice(start, end)}\nthis.testApi = { readDownloadCollectionCatalog, fetchDownloadCollectionCatalog, fetchDownloadViewData, normalizeDownloadCollectionEntry, isConfirmedDownloadCollectionCatalog, resolveDownloadScopeMode, makeDownloadCollectionPage, resolveDownloadCollectionPage };`,
   context
 );
 
-const { readDownloadCollectionCatalog, fetchDownloadCollectionCatalog, normalizeDownloadCollectionEntry, isConfirmedDownloadCollectionCatalog, resolveDownloadScopeMode, makeDownloadCollectionPage, resolveDownloadCollectionPage } = context.testApi;
+const { readDownloadCollectionCatalog, fetchDownloadCollectionCatalog, fetchDownloadViewData, normalizeDownloadCollectionEntry, isConfirmedDownloadCollectionCatalog, resolveDownloadScopeMode, makeDownloadCollectionPage, resolveDownloadCollectionPage } = context.testApi;
 const catalog = readDownloadCollectionCatalog(basePage);
 if (catalog.length !== 3) throw new Error(`合集条目数量错误：${JSON.stringify(catalog)}`);
 if (catalog.map((entry) => entry.collectionIndex).join(",") !== "1,2,3") {
@@ -88,7 +88,7 @@ const cidOnlyEntry = normalizeDownloadCollectionEntry({ cid: basePage.cid, title
 if (!cidOnlyEntry.current) {
   throw new Error(`仅凭 CID 的当前项标记错误：${JSON.stringify(cidOnlyEntry)}`);
 }
-context.window.fetch = async () => ({
+context.window.fetch = async (url) => ({
   ok: true,
   status: 200,
   json: async () => ({

@@ -2,7 +2,7 @@ import vm from "node:vm";
 import { readUserscriptSource } from "./helpers/read-userscript-source.mjs";
 
 const script = await readUserscriptSource();
-const start = script.indexOf("  function downloadCodecLabel");
+const start = script.indexOf("  function normalizeDownloadTitle");
 const end = script.indexOf("  function updateDownloadTask", start);
 const extensionStart = script.indexOf("  function downloadExtension");
 const extensionEnd = script.indexOf("  function runSeparateDownload", extensionStart);
@@ -10,11 +10,11 @@ if ([start, end, extensionStart, extensionEnd].some((value) => value < 0)) throw
 
 const context = {};
 vm.runInNewContext(
-  `${script.slice(start, end)}\n${script.slice(extensionStart, extensionEnd)}\nthis.testApi = { buildDownloadFileName, buildDownloadTaskTitle };`,
+  `${script.slice(start, end)}\n${script.slice(extensionStart, extensionEnd)}\nthis.testApi = { buildDownloadFileName, buildDownloadTaskTitle, buildDownloadAudioMetadata };`,
   context
 );
 
-const { buildDownloadFileName, buildDownloadTaskTitle } = context.testApi;
+const { buildDownloadFileName, buildDownloadTaskTitle, buildDownloadAudioMetadata } = context.testApi;
 const model = {
   title: "测试/视频: 这是一个很长的标题 - 带 + 符号",
   bvid: "BV1pb8o6yE8f",
@@ -46,7 +46,9 @@ for (const value of [merged, splitVideo, splitAudio, taskTitle]) {
 }
 if (!merged.endsWith("_1080P_AVC_AAC_video_audio.mp4")) throw new Error(`合并文件名错误：${merged}`);
 if (!splitVideo.endsWith("_1080P_AVC_video.mp4")) throw new Error(`视频分轨文件名错误：${splitVideo}`);
-if (!splitAudio.endsWith("_AAC_192kbps_audio.m4a")) throw new Error(`音频分轨文件名错误：${splitAudio}`);
+if (!splitAudio.endsWith("_未知作者.m4a") || /BV1pb8o6yE8f|P01|AAC|192kbps|audio/i.test(splitAudio)) {
+  throw new Error(`音频单独下载名应只包含音乐名和作者：${splitAudio}`);
+}
 if (taskTitle.endsWith(".mp4")) throw new Error(`任务标题不应带扩展名：${taskTitle}`);
 
 const collectionName = buildDownloadFileName({
@@ -86,7 +88,53 @@ const avName = buildDownloadFileName({ title: "AV 测试", videoId: "av123456", 
   codecs: "fLaC",
   mimeType: "audio/flac"
 });
-if (!avName.includes("AV123456_P02_FLAC_audio.flac")) throw new Error(`AV/FLAC 文件名错误：${avName}`);
+if (avName !== "AV_测试_未知作者.flac") throw new Error(`AV/FLAC 文件名错误：${avName}`);
+
+const parsedMusicName = buildDownloadFileName({
+  title: "【Hi-Res】70 80 90 经典歌曲合集",
+  part: "周传雄《最好听10首合集》",
+  ownerName: "IM音乐故事汇",
+  bvid: "BV1j2YC6iE4i",
+  page: 2
+}, "audio", null, audio);
+if (parsedMusicName !== "最好听10首合集_周传雄.m4a") {
+  throw new Error(`音乐名/作者自动识别错误：${parsedMusicName}`);
+}
+
+const explicitMusicName = buildDownloadFileName({
+  title: "视频回退标题",
+  musicTitle: "海阔天空",
+  artist: "Beyond",
+  bvid: "BV1j2YC6iE4i",
+  page: 2
+}, "audio", null, audio);
+if (explicitMusicName !== "海阔天空_Beyond.m4a") {
+  throw new Error(`显式音乐元数据没有优先用于文件名：${explicitMusicName}`);
+}
+
+const fallbackMusicName = buildDownloadFileName({
+  title: "视频回退标题",
+  ownerName: "视频作者",
+  bvid: "BV1j2YC6iE4i",
+  page: 2
+}, "audio", null, audio);
+if (fallbackMusicName !== "视频回退标题_视频作者.m4a") {
+  throw new Error(`音乐名无法识别时没有回退视频名称：${fallbackMusicName}`);
+}
+
+const audioMetadata = buildDownloadAudioMetadata({
+  title: "视频回退标题",
+  part: "周传雄《最好听10首合集》",
+  ownerName: "IM音乐故事汇",
+  videoId: "BV1j2YC6iE4i",
+  bvid: "BV1j2YC6iE4i",
+  page: 2,
+  cid: "20002"
+}, audio);
+if (audioMetadata.title !== "最好听10首合集" || audioMetadata.artist !== "周传雄" ||
+  !audioMetadata.comment.includes("BV1j2YC6iE4i") || !audioMetadata.comment.includes("P02")) {
+  throw new Error(`音频元数据没有保留音乐身份和技术信息：${JSON.stringify(audioMetadata)}`);
+}
 
 const pagePrefixed = buildDownloadFileName({ title: "P2_哔哩哔哩_bilibili", bvid: "BV1j2YC6iE4i", page: 2 }, "merge", video, audio);
 if (pagePrefixed !== "哔哩哔哩_bilibili_BV1j2YC6iE4i_P02_1080P_AVC_AAC_video_audio.mp4") {

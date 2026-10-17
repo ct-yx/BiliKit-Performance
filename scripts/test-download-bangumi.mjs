@@ -105,7 +105,9 @@ context.canDownloadRequestJson = () => typeof context.window?.fetch === "functio
 context.downloadRequestJson = (url, options = {}) => context.window.fetch(url, options);
 
 vm.runInNewContext(
-  `${script.slice(start, end)}
+  `const DOWNLOAD_JSON_TIMEOUT = 15000;
+const DOWNLOAD_BATCH_RESOLUTION_TIMEOUT = 45000;
+${script.slice(start, end)}
 this.testApi = {
   parseDownloadPageUrl,
   currentDownloadPageIdentity,

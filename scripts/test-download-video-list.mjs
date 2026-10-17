@@ -14,7 +14,7 @@ const context = {
 context.canDownloadRequestJson = () => typeof context.window?.fetch === "function";
 context.downloadRequestJson = (url, options = {}) => context.window.fetch(url, options);
 vm.runInNewContext(
-  `${script.slice(start, end)}\nthis.testApi = { buildDownloadVideoList, buildDownloadVideoListGroups, setDownloadVideoListGroupSelection, downloadVideoListLabel, expandDownloadCollectionCatalog, buildDownloadCollectionCatalogFromView, fetchDownloadCatalogBundle, createDownloadBatchResolutionGate };`,
+  `const DOWNLOAD_JSON_TIMEOUT = 15000;\nconst DOWNLOAD_BATCH_RESOLUTION_TIMEOUT = 45000;\n${script.slice(start, end)}\nthis.testApi = { buildDownloadVideoList, buildDownloadVideoListGroups, setDownloadVideoListGroupSelection, downloadVideoListLabel, expandDownloadCollectionCatalog, buildDownloadCollectionCatalogFromView, fetchDownloadCatalogBundle, createDownloadBatchResolutionGate };`,
   context
 );
 

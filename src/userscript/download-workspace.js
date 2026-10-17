@@ -6,6 +6,7 @@
   // 以下内嵌字符串由 npm run build:remux-worker 生成，不要手动编辑。
   // 保留 Mediabunny 版本和 MPL-2.0 来源信息。
   const DOWNLOAD_JSON_TIMEOUT = 15000;
+  const DOWNLOAD_BATCH_RESOLUTION_TIMEOUT = 45000;
   function getDownloadJsonRequestApi() {
     if (typeof globalThis !== "undefined" && typeof globalThis.__BILIKIT_EDGE_GM_XMLHTTPREQUEST__ === "function") {
       return globalThis.__BILIKIT_EDGE_GM_XMLHTTPREQUEST__;
@@ -27,6 +28,7 @@
       let request = null;
       let timer = 0;
       let settled = false;
+      let timeoutTriggered = false;
       const cleanup = () => {
         clearTimeout(timer);
         signal?.removeEventListener?.("abort", onAbort);
@@ -49,6 +51,7 @@
       }
       signal?.addEventListener?.("abort", onAbort, { once: true });
       timer = setTimeout(() => {
+        timeoutTriggered = true;
         try { request?.abort?.(); } catch {
         }
         fail(new Error("请求超时"));
@@ -79,7 +82,7 @@
           },
           onerror: () => fail(new Error("网络请求失败")),
           ontimeout: () => fail(new Error("请求超时")),
-          onabort: () => fail(new Error("请求已取消"))
+          onabort: () => fail(new Error(timeoutTriggered ? "请求超时" : "请求已取消"))
         });
       } catch (error) {
         fail(error);
@@ -156,7 +159,7 @@
   let DOWNLOAD_MERGE_RUNNING_BYTES = 0;
   let DOWNLOAD_WORKSPACE_CATALOG = [];
   let DOWNLOAD_WORKSPACE_COLLECTION = [];
-  const DOWNLOAD_ACTIVE_FETCH_TIMEOUT = 10e3;
+  const DOWNLOAD_ACTIVE_FETCH_TIMEOUT = DOWNLOAD_BATCH_RESOLUTION_TIMEOUT;
   const DOWNLOAD_MAX_MERGE_CONCURRENCY = 4;
   const DOWNLOAD_TASK_DISPLAY_LIMIT = 100;
   let DOWNLOAD_TASK_VISIBLE_LIMIT = DOWNLOAD_TASK_DISPLAY_LIMIT;
@@ -270,6 +273,13 @@
     return {
       title: normalizeDownloadTitle(source.title) || "Bilibili 视频",
       filenameTitle: normalizeDownloadTitle(source.filenameTitle || source.seasonTitle || source.title) || "Bilibili 视频",
+      part: normalizeDownloadTitle(source.part || source.pageTitle),
+      ownerName: normalizeDownloadTitle(source.ownerName || source.uploaderName || source.author),
+      musicTitle: normalizeDownloadTitle(source.musicTitle || source.songTitle),
+      artist: normalizeDownloadTitle(source.artist || source.musicArtist || source.singer),
+      collectionTitle: normalizeDownloadTitle(source.collectionTitle),
+      collectionItemTitle: normalizeDownloadTitle(source.collectionItemTitle),
+      collectionRootTitle: normalizeDownloadTitle(source.collectionRootTitle),
       videoId,
       bvid,
       aid: normalizedDownloadAid(source.aid || String(videoId || "").match(/^av(\d+)$/i)?.[1]),
@@ -384,8 +394,71 @@
     const title = normalizeDownloadTitle(value);
     return !title || /^(?:P\s*\d+[_\-:：\s]*)?(?:哔哩哔哩|bilibili)(?:[_\-:：\s]*(?:哔哩哔哩|bilibili))*$/i.test(title) || /^(?:BV|av)\w+$/i.test(title);
   }
+  function isGenericDownloadPart(value) {
+    return /^(?:P\s*\d+|第\s*\d+\s*[P集期]|C\s*\d+(?:\s*[_-]\s*P\s*\d+)?|E\s*\d+|S\s*\d+\s*E\s*\d+)$/i.test(normalizeDownloadTitle(value));
+  }
   function selectDownloadTitle(...values) {
     return values.map(normalizeDownloadTitle).find((value) => !isGenericDownloadTitle(value)) || "";
+  }
+  function selectDownloadPart(...values) {
+    const normalized = values.map(normalizeDownloadTitle).filter(Boolean);
+    return normalized.find((value) => !isGenericDownloadPart(value)) || normalized[0] || "";
+  }
+  function selectDownloadAuthor(...values) {
+    return values.map((value) => normalizeDownloadTitle(value).replace(/^@+/, "")).find((value) => (
+      value && !/^(?:未知作者|作者|up主|bilibili|哔哩哔哩)$/i.test(value)
+    )) || "";
+  }
+  function musicNameCandidate(value) {
+    return normalizeDownloadTitle(value)
+      .replace(/^[【\[][^】\]]+[】\]]\s*/g, "")
+      .replace(/^(?:在|于)?百万豪装录音棚(?:大声)?听\s*/i, "")
+      .replace(/^(?:发现|歌曲|音乐)\s*[:：]?\s*/i, "")
+      .replace(/^(?:P\s*\d+|第\s*\d+\s*[P集期])\s*[-_—–:：]?\s*/i, "")
+      .trim();
+  }
+  function parseDownloadMusicIdentity(model = {}) {
+    let title = selectDownloadTitle(model.musicTitle, model.songTitle);
+    let artist = selectDownloadAuthor(model.artist, model.musicArtist, model.singer);
+    const candidates = [model.part, model.title, model.filenameTitle, model.collectionItemTitle, model.collectionTitle]
+      .map(musicNameCandidate)
+      .filter(Boolean);
+    for (const candidate of candidates) {
+      if (!title) {
+        const angle = candidate.match(/([^《「『【\[\]]{1,40})[《「『【\[]\s*([^》」』】\]]{1,120})[》」』】\]]/);
+        if (angle) {
+          const prefix = angle[1].replace(/[\s:：|｜—–-]+$/g, "").trim();
+          const prefixParts = prefix.split(/[\s:：|｜—–-]+/).filter(Boolean);
+          const parsedArtist = prefixParts.at(-1) || "";
+          if (!artist && parsedArtist && !/^(?:经典|歌曲|老歌|合集|最好听|精选|怀旧|音乐|录音棚|大声听|70|80|90)$/i.test(parsedArtist)) artist = parsedArtist;
+          title = normalizeDownloadTitle(angle[2]);
+        }
+      }
+      if (!title) {
+        const separated = candidate.match(/^(.{1,32}?)\s*[-—–|｜:：]\s*(.{1,120})$/);
+        if (separated && !/[\\/]/.test(separated[1]) &&
+          !/(?:视频|合集|经典|高清|无损|录音棚|哔哩哔哩|bilibili)/i.test(separated[1]) &&
+          !/^(?:p\s*\d+|第\s*\d+[p集期]?)$/i.test(separated[1].trim())) {
+          artist ||= selectDownloadAuthor(separated[1]);
+          title = normalizeDownloadTitle(separated[2]);
+        }
+      }
+      if (!title) {
+        const compact = candidate.match(/^(.{1,24}?)(最好听|精选|经典(?:歌曲|老歌)?|歌曲|合集)(.*)$/i);
+        if (compact && !/^(?:70|80|90|经典|歌曲|音乐|怀旧)$/i.test(compact[1].trim())) {
+          artist ||= selectDownloadAuthor(compact[1]);
+          title = normalizeDownloadTitle(`${compact[2]}${compact[3]}`);
+        }
+      }
+      if (title && artist) break;
+    }
+    const fallbackTitle = [model.musicTitle, model.songTitle, model.title, model.filenameTitle, model.part]
+      .map(musicNameCandidate)
+      .find((value) => value && !isGenericDownloadPart(value) && !isGenericDownloadTitle(value)) || "Bilibili 视频";
+    return {
+      title: title || fallbackTitle,
+      artist: artist || selectDownloadAuthor(model.ownerName, model.uploaderName, model.author) || "未知作者"
+    };
   }
   function readDownloadPageTitle() {
     const selectors = [
@@ -410,10 +483,50 @@
     }
     return "";
   }
+  function readDownloadPagePart() {
+    const selectors = [
+      ".bpx-player-ctrl-eplist-multi-menu-item.bpx-state-multi-active-item .bpx-player-ctrl-eplist-multi-menu-item-text",
+      ".bpx-player-ctrl-eplist-multi-menu-item.bpx-state-multi-active-item",
+      ".bilibili-player-episode-list-item.on",
+      ".cur-list .on"
+    ];
+    for (const selector of selectors) {
+      try {
+        const value = normalizeDownloadTitle(document.querySelector(selector)?.textContent || "");
+        if (value) return value;
+      } catch {
+      }
+    }
+    return "";
+  }
+  function readDownloadOwnerName() {
+    const selectors = [
+      ".up-name",
+      ".up-info .name",
+      ".up-detail .name",
+      ".author-name",
+      ".video-owner-name"
+    ];
+    for (const selector of selectors) {
+      try {
+        const value = selectDownloadAuthor(document.querySelector(selector)?.textContent || "");
+        if (value) return value;
+      } catch {
+      }
+    }
+    return "";
+  }
+  function readDownloadPageOwnerName() {
+    return readDownloadOwnerName();
+  }
   function refreshDownloadSnapshotTitle(snapshot, page = null) {
     if (!snapshot || typeof snapshot !== "object") return snapshot;
     const title = selectDownloadTitle(page?.title, readDownloadPageTitle(), snapshot.title);
     if (title) snapshot.title = title;
+    const part = selectDownloadPart(page?.part, snapshot.part, readDownloadPagePart());
+    if (part) snapshot.part = part;
+    const ownerName = selectDownloadAuthor(page?.ownerName, snapshot.ownerName, readDownloadPageOwnerName());
+    if (ownerName) snapshot.ownerName = ownerName;
     return snapshot;
   }
   function formatDownloadEpisodeDuration(value) {
@@ -593,6 +706,9 @@
       cid,
       title: selectDownloadTitle(entry?.title, entry?.collectionTitle, entry?.part) || "Bilibili 视频",
       part: normalizeDownloadTitle(entry?.part || selectedPage?.part || entry?.title) || `合集视频 ${collectionIndex}`,
+      ownerName: selectDownloadAuthor(entry?.ownerName, basePage?.ownerName),
+      musicTitle: selectDownloadTitle(entry?.musicTitle, basePage?.musicTitle),
+      artist: selectDownloadAuthor(entry?.artist, basePage?.artist),
       duration,
       durationLabel: String(entry?.durationLabel || formatDownloadEpisodeDuration(duration)),
       source: String(entry?.source || "state"),
@@ -774,13 +890,13 @@
     const confirmed = confirmedDownloadCollectionCatalog(entries, basePage);
     return confirmed.length ? expandDownloadCollectionCatalog(confirmed, basePage) : [];
   }
-  async function fetchDownloadViewData(basePage, signal) {
+  async function fetchDownloadViewData(basePage, signal, timeout = DOWNLOAD_JSON_TIMEOUT) {
     if (!basePage?.videoId || !canDownloadRequestJson()) throw new Error("当前页面没有可识别的视频 ID");
     const viewUrl = new URL("https://api.bilibili.com/x/web-interface/view");
     if (basePage.bvid) viewUrl.searchParams.set("bvid", basePage.bvid);
     else if (basePage.aid) viewUrl.searchParams.set("aid", basePage.aid);
     else throw new Error("当前视频的 AV/BV ID 不可用");
-    const response = await downloadRequestJson(viewUrl.href, { signal });
+    const response = await downloadRequestJson(viewUrl.href, { signal, timeout });
     let payload = null;
     try {
       payload = await response.json();
@@ -832,6 +948,9 @@
       page: 1,
       title,
       part: normalizeDownloadTitle(entry?.longTitle || entry?.showTitle || entry?.part || title) || title,
+      ownerName: selectDownloadAuthor(entry?.ownerName, basePage?.ownerName),
+      musicTitle: selectDownloadTitle(entry?.musicTitle, basePage?.musicTitle),
+      artist: selectDownloadAuthor(entry?.artist, basePage?.artist),
       duration,
       durationLabel: String(entry?.durationLabel || formatDownloadEpisodeDuration(duration)),
       badge: normalizeDownloadTitle(entry?.badge),
@@ -1054,6 +1173,9 @@
       cid: String(entry?.cid || "").match(/^\d+$/)?.[0] || "",
       part: normalizeDownloadTitle(entry?.part || entry?.title || `P${page}`) || `P${page}`,
       title: selectDownloadTitle(entry?.title, basePage?.title) || "Bilibili 视频",
+      ownerName: selectDownloadAuthor(entry?.ownerName, basePage?.ownerName),
+      musicTitle: selectDownloadTitle(entry?.musicTitle, basePage?.musicTitle),
+      artist: selectDownloadAuthor(entry?.artist, basePage?.artist),
       duration,
       durationLabel: String(entry?.durationLabel || formatDownloadEpisodeDuration(duration)),
       source: String(entry?.source || "view"),
@@ -1619,6 +1741,7 @@
     const seasonTitle = selectDownloadTitle(nextData.season_title, state.seasonTitle, readDownloadPageTitle()) ||
       normalizeDownloadTitle(document.title).replace(/[-_]番剧.*$/i, "");
     const title = selectDownloadTitle(state.episodeTitle, nextData.title, seasonTitle) || videoId || "Bilibili 视频";
+    const ownerName = selectDownloadAuthor(state.ownerName, nextData.ownerName, readDownloadOwnerName());
     const routeKey = `${urlIdentity.routeKey || `${location.origin.toLowerCase()}${location.pathname}`}|season=${seasonId || "unknown"}|ep=${epId || "unknown"}|cid=${cid || "unknown"}`;
     return {
       ...urlIdentity,
@@ -1630,6 +1753,8 @@
       aid,
       cid,
       title,
+      part: selectDownloadPart(state.episodeTitle, nextData.title, readDownloadPagePart()),
+      ownerName,
       filenameTitle: seasonTitle || title,
       seasonTitle: seasonTitle || title,
       duration: Number(state.duration) || 0,
@@ -1704,6 +1829,16 @@
     const routeKey = urlIdentity.routeKey || `${location.origin.toLowerCase()}${location.pathname}|p=${page}|cid=${urlIdentity.cid || "unknown"}`;
     const playerDuration = readCurrentDownloadPlayerDuration();
     const metadataDuration = Number(selectedPage?.duration || videoData.duration || videoData.episodeInfo?.duration) || (documentMatchesUrl ? documentIdentity.duration : 0);
+    const ownerName = selectDownloadAuthor(
+      videoData.owner?.name,
+      videoData.author,
+      state.owner?.name,
+      state.author,
+      readDownloadOwnerName()
+    );
+    const part = selectDownloadPart(selectedPage?.part, readDownloadPagePart());
+    const musicTitle = selectDownloadTitle(videoData.musicTitle, videoData.songTitle, state.musicTitle, state.songTitle);
+    const artist = selectDownloadAuthor(videoData.artist, videoData.singer, state.artist, state.singer);
     return {
       videoId,
       bvid,
@@ -1714,6 +1849,10 @@
         stateMatchesUrl ? videoData.title : "",
         documentMatchesUrl ? documentIdentity.title : ""
       ) || (urlIdentity.videoId ? urlIdentity.videoId : normalizeDownloadTitle(document.title).replace(/[_-]哔哩哔哩.*$/i, "")),
+      part,
+      ownerName,
+      musicTitle,
+      artist,
       duration: metadataDuration || playerDuration,
       playerDuration,
       metadataDuration,
@@ -1869,6 +2008,10 @@
         cid,
         page: cidPage || page.page,
         title: page.title,
+        part: page.part,
+        ownerName: page.ownerName,
+        musicTitle: page.musicTitle,
+        artist: page.artist,
         duration: responseDuration || page.playerDuration || page.duration,
         filenameTitle: page.filenameTitle || page.seasonTitle || page.title,
         downloadScope: isBangumi ? "bangumi" : "episodes",
@@ -1902,6 +2045,10 @@
     const durationMs = Number(data.timelength) || 0;
     return normalizeDownloadSnapshot({
       title: identity.title,
+      part: identity.part,
+      ownerName: identity.ownerName,
+      musicTitle: identity.musicTitle,
+      artist: identity.artist,
       videoId: identity.videoId,
       bvid: identity.bvid,
       aid: identity.aid,
@@ -2259,10 +2406,10 @@
       throw error;
     }
   }
-  async function fetchDownloadPlayurlResponse(request, signal) {
+  async function fetchDownloadPlayurlResponse(request, signal, timeout = DOWNLOAD_JSON_TIMEOUT) {
     let response;
     try {
-      response = await downloadRequestJson(request.url, { signal });
+      response = await downloadRequestJson(request.url, { signal, timeout });
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error || "播放接口请求失败"));
       if (!signal?.aborted) failure.downloadApiFailure = true;
@@ -2289,18 +2436,19 @@
     return { payload, data: payload?.data || payload?.result || payload };
   }
   async function fetchDownloadPlayurlWithLegacyFallback(page, request, signal, batch = false) {
+    const timeout = batch ? DOWNLOAD_BATCH_RESOLUTION_TIMEOUT : DOWNLOAD_JSON_TIMEOUT;
     let activeRequest = request;
     let result;
     try {
-      result = await fetchDownloadPlayurlResponse(activeRequest, signal);
+      result = await fetchDownloadPlayurlResponse(activeRequest, signal, timeout);
     } catch (error) {
       if (!canFallbackDownloadPlayurl(page, activeRequest) || signal?.aborted) throw error;
       activeRequest = buildLegacyDownloadPlayurlRequest(page, batch);
-      result = await fetchDownloadPlayurlResponse(activeRequest, signal);
+      result = await fetchDownloadPlayurlResponse(activeRequest, signal, timeout);
     }
     if (canFallbackDownloadPlayurl(page, activeRequest) && !hasDownloadDashTracks(result.data)) {
       activeRequest = buildLegacyDownloadPlayurlRequest(page, batch);
-      result = await fetchDownloadPlayurlResponse(activeRequest, signal);
+      result = await fetchDownloadPlayurlResponse(activeRequest, signal, timeout);
     }
     return { ...result, request: activeRequest };
   }
@@ -2332,6 +2480,10 @@
       cid: String(page.cid),
       page: Number(page.page) || 1,
       title: page.title,
+      part: page.part,
+      ownerName: page.ownerName,
+      musicTitle: page.musicTitle,
+      artist: page.artist,
       filenameTitle: page.filenameTitle || page.seasonTitle || page.title,
         downloadScope: isBangumi ? "bangumi" : "episodes",
         seasonId: page.seasonId || request.seasonId || responseSeasonId,
@@ -2754,7 +2906,50 @@
     const rate = Number(track.bandwidth) > 0 ? `${Math.round(Number(track.bandwidth) / 1000)}kbps` : "";
     return [cleanDownloadName(downloadCodecLabel(track), 20), includeBitrate ? rate : ""].filter(Boolean);
   }
+  function replaceDownloadFileExtension(fileName, extension) {
+    const normalizedExtension = String(extension || "").replace(/^\.+/, "").toLowerCase();
+    const baseName = String(fileName || "bilibili_audio").replace(/\.[a-z0-9]{1,8}$/i, "");
+    return normalizedExtension ? `${baseName}.${normalizedExtension}` : baseName;
+  }
+  function buildDownloadAudioMetadata(model, audio) {
+    const identity = parseDownloadMusicIdentity(model);
+    const sourceTitle = selectDownloadTitle(
+      model?.collectionItemTitle,
+      model?.collectionTitle,
+      model?.title,
+      model?.filenameTitle
+    ) || "Bilibili 视频";
+    const sourceId = downloadFilenameIdentity(model || {});
+    const pageLabel = downloadFilenamePage(model || {});
+    const technical = [
+      `来源: Bilibili`,
+      `视频: ${sourceTitle}`,
+      `视频ID: ${sourceId}`,
+      `分P: ${pageLabel}`,
+      model?.cid ? `CID: ${model.cid}` : "",
+      audio?.codecs ? `编码: ${audio.codecs}` : "",
+      audio?.mimeType ? `容器: ${audio.mimeType}` : "",
+      Number(audio?.bandwidth) > 0 ? `码率: ${Math.round(Number(audio.bandwidth) / 1000)} kbps` : "",
+      Number(model?.duration) > 0 ? `时长: ${formatDownloadEpisodeDuration(model.duration)}` : ""
+    ].filter(Boolean).join(" | ");
+    return {
+      title: identity.title,
+      artist: identity.artist,
+      album: sourceTitle,
+      albumArtist: selectDownloadAuthor(model?.ownerName) || "Bilibili",
+      comment: technical
+    };
+  }
+  function buildDownloadAudioFileName(model, audio) {
+    const identity = parseDownloadMusicIdentity(model);
+    const base = [identity.title, identity.artist]
+      .map((value) => cleanDownloadName(value, 100))
+      .filter(Boolean)
+      .join("_");
+    return `${base || "bilibili_audio"}.${downloadExtension(audio)}`;
+  }
   function buildDownloadFileName(model, kind, video = null, audio = null) {
+    if (kind === "audio") return buildDownloadAudioFileName(model, audio);
     const parts = [
       downloadFilenameTitle(model),
       downloadFilenameIdentity(model || {}),
@@ -3018,9 +3213,8 @@
       list.appendChild(more);
     }
   }
-  function saveMergedBlobWithBrowser(task) {
+  function saveDownloadBlobWithBrowser(task, fileName = "bilibili_video.mp4", messagePrefix = "已交给浏览器保存") {
     if (!task.blob) return false;
-    const fileName = task.fileName || "bilibili_video.mp4";
     const url = URL.createObjectURL(task.blob);
     const link = document.createElement("a");
     link.href = url;
@@ -3033,8 +3227,11 @@
     setTimeout(() => URL.revokeObjectURL(url), 60e3);
     task.blob = null;
     setDownloadSaveProgress(task, 1);
-    updateDownloadTask(task, { status: "complete", progress: 100, message: `已交给浏览器保存：${fileName}` });
+    updateDownloadTask(task, { status: "complete", progress: 100, message: `${messagePrefix}：${fileName}` });
     return true;
+  }
+  function saveMergedBlobWithBrowser(task) {
+    return saveDownloadBlobWithBrowser(task, task.fileName || "bilibili_video.mp4");
   }
   function saveMergedDownload(task, fromUser) {
     if (!task.blob) return;
@@ -3291,6 +3488,10 @@
     const taskKind = selected.length > 1 ? "tracks" : video ? "video" : "audio";
     const task = existingTask || makeDownloadTask("tracks", buildDownloadTaskTitle(model, taskKind, video, audio));
     task.title = buildDownloadTaskTitle(model, taskKind, video, audio);
+    if (!video && audio) {
+      void runSeparateAudioDownload(model, audio, task, note);
+      return task;
+    }
     const progress = selected.map(() => 0);
     const files = selected.map((track) => buildDownloadFileName(
       model,
@@ -3361,6 +3562,173 @@
       }
     };
     void run();
+    return task;
+  }
+  async function runSeparateAudioDownload(model, audio, task, note = "") {
+    task.mode = "audio";
+    task.title = buildDownloadTaskTitle(model, "audio", null, audio);
+    task.fileName = buildDownloadFileName(model, "audio", null, audio);
+    task.status = "downloading";
+    task.downloadStartedAt = task.downloadStartedAt || downloadNow();
+    task.mediaDuration = Number(model.duration) || 0;
+    task.qualityHeight = 0;
+    task._downloadParts = [{
+      loaded: 0,
+      total: 0,
+      estimated: estimateDownloadTrackBytes(audio, model.duration)
+    }];
+    task.fileSizeEstimateBytes = task._downloadParts[0].estimated;
+    task.message = `${note ? `${note}；` : ""}正在读取音频轨以写入音乐信息…`;
+    renderDownloadTasks();
+
+    const remoteGate = task.remoteDownloadGate;
+    const remoteController = remoteGate ? new AbortController() : null;
+    let releaseRemote = null;
+    let cancelRemote = null;
+    let worker = null;
+    let workerUrl = "";
+    let cancelWorker = null;
+    let audioBuffer = null;
+    try {
+      if (remoteGate) {
+        cancelRemote = () => remoteController.abort("任务已取消");
+        task.cancelFunctions.push(cancelRemote);
+        releaseRemote = await remoteGate.acquire(remoteController.signal);
+        removeDownloadCancel(task, cancelRemote);
+        cancelRemote = null;
+        if (task.status === "canceled") return;
+      }
+      audioBuffer = await gmRequestArrayBuffer(audio, task, (event) => {
+        updateDownloadTask(task, {
+          message: `正在读取音频轨：${event.lengthComputable && event.total
+            ? `${Math.round(event.loaded / event.total * 100)}%`
+            : formatDownloadBytes(event.loaded)}`
+        });
+      }, 0);
+      if (task.status === "canceled") return;
+
+      const saveOriginalAudio = async (reason = "") => {
+        if (task.status === "canceled" || !audioBuffer) return;
+        task.fileName = replaceDownloadFileExtension(task.fileName, downloadExtension(audio));
+        const originalBuffer = audioBuffer;
+        task.mode = "tracks";
+        task.status = "downloading";
+        task.remuxProgress = 1;
+        resetDownloadPartProgress(task, 0);
+        task.message = `${reason}；回退为原始音频下载…`;
+        updateDownloadTask(task, {});
+        try {
+          await gmDownloadTrack(audio, task.fileName, task, (event) => {
+            updateDownloadPartProgress(task, 0, event.loaded, event.lengthComputable ? event.total : 0);
+            task.saveProgress = task.downloadProgress;
+            updateDownloadTask(task, {
+              message: `回退原始音频下载：${event.lengthComputable && event.total
+                ? `${Math.round(event.loaded / event.total * 100)}%`
+                : formatDownloadBytes(event.loaded)}`
+            });
+          }, 0);
+          if (task.status !== "canceled") {
+            updateDownloadTask(task, {
+              status: "complete",
+              progress: 100,
+              saveProgress: 1,
+              message: `已下载原始音频：${task.fileName}`
+            });
+          }
+        } catch (fallbackError) {
+          if (task.status === "canceled") return;
+          if (!(originalBuffer instanceof ArrayBuffer) || !originalBuffer.byteLength) throw fallbackError;
+          task.blob = new Blob([originalBuffer], { type: audio.mimeType || "application/octet-stream" });
+          task.inputBytes = originalBuffer.byteLength;
+          task.status = "saving";
+          setDownloadSaveProgress(task, 0.1);
+          updateDownloadTask(task, { message: "下载管理器不可用，正在由浏览器保存原始音频…" });
+          saveDownloadBlobWithBrowser(task, task.fileName, "已保存音频");
+        } finally {
+          audioBuffer = null;
+        }
+      };
+
+      const source = DOWNLOAD_WORKER_SOURCE;
+      if (!source) {
+        await saveOriginalAudio("当前脚本未包含音频封装 Worker");
+        return;
+      }
+      workerUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      worker = new Worker(workerUrl);
+      task.status = "remuxing";
+      task.downloadProgress = 1;
+      task.remuxProgress = 0;
+      task.remuxStartedAt = downloadNow();
+      task.inputBytes = audioBuffer.byteLength;
+      task.message = "音频轨已读取，正在写入音乐元数据并封装 M4A…";
+      updateDownloadTask(task, {});
+      const result = await new Promise((resolve, reject) => {
+        cancelWorker = () => {
+          worker?.terminate();
+          if (workerUrl) URL.revokeObjectURL(workerUrl);
+          workerUrl = "";
+          reject(new Error("已取消"));
+        };
+        task.cancelFunctions.push(cancelWorker);
+        worker.addEventListener("message", (event) => {
+          const message = event.data || {};
+          if (message.type === "progress") {
+            setDownloadRemuxProgress(task, message.fraction);
+            updateDownloadTask(task, { message: "正在重封装音频并写入音乐元数据…" });
+          } else if (message.type === "audio-done") {
+            setDownloadRemuxProgress(task, 1);
+            resolve(message);
+          } else if (message.type === "error") {
+            reject(new Error(String(message.message || "音频封装失败").replace(/https?:\/\/\S+/gi, "媒体资源").slice(0, 220)));
+          }
+        });
+        worker.addEventListener("error", () => reject(new Error("音频 Worker 执行失败")), { once: true });
+        worker.postMessage({
+          type: "remux-audio",
+          audio: audioBuffer,
+          duration: model.duration,
+          ...buildDownloadAudioMetadata(model, audio)
+        }, [audioBuffer]);
+      });
+      audioBuffer = null;
+      removeDownloadCancel(task, cancelWorker);
+      cancelWorker = null;
+      worker.terminate();
+      worker = null;
+      if (workerUrl) URL.revokeObjectURL(workerUrl);
+      workerUrl = "";
+      if (task.status === "canceled") return;
+
+      const extension = result.extension || "m4a";
+      task.fileName = replaceDownloadFileExtension(task.fileName, extension);
+      task.blob = new Blob([result.buffer], { type: result.mimeType || "audio/mp4" });
+      task.status = "saving";
+      task.remuxProgress = 1;
+      task.inputBytes = Number(result.bytes) || task.inputBytes;
+      setDownloadSaveProgress(task, 0.1);
+      task.message = `音乐信息已写入（${(Number(result.bytes) / 1048576).toFixed(1)} MiB），正在保存…`;
+      updateDownloadTask(task, {});
+      saveDownloadBlobWithBrowser(task, task.fileName, "已保存音乐");
+    } catch (error) {
+      if (cancelWorker) removeDownloadCancel(task, cancelWorker);
+      try { worker?.terminate(); } catch {}
+      if (workerUrl) URL.revokeObjectURL(workerUrl);
+      if (task.status === "canceled") return;
+      if (audioBuffer) {
+        const reason = error instanceof Error ? error.message : "未知封装错误";
+        try {
+          await saveOriginalAudio(reason);
+        } catch (fallbackError) {
+          runDownloadTaskError(task, fallbackError);
+        }
+      } else {
+        runDownloadTaskError(task, error);
+      }
+    } finally {
+      if (cancelRemote) removeDownloadCancel(task, cancelRemote);
+      releaseRemote?.();
+    }
   }
   function mergeDownloadStats() {
     DOWNLOAD_CAPTURE_STATS.mergeQueued = DOWNLOAD_MERGE_QUEUE.length;
@@ -3566,6 +3934,10 @@
       cid: String(entry.cid || ""),
       page: Math.max(1, Number(entry.page) || 1),
       title: selectDownloadTitle(basePage.title, entry.title) || basePage.title,
+      part: selectDownloadPart(entry.part, basePage.part),
+      ownerName: selectDownloadAuthor(entry.ownerName, basePage.ownerName),
+      musicTitle: selectDownloadTitle(entry.musicTitle, basePage.musicTitle),
+      artist: selectDownloadAuthor(entry.artist, basePage.artist),
       duration: Number(entry.duration) || Number(basePage.duration) || 0,
       routeKey: `${basePage.routeKey || basePage.videoId}|p=${Number(entry.page) || 1}|cid=${entry.cid || "unknown"}`,
       requiresCid: false,
@@ -3595,6 +3967,10 @@
       cid: String(entry?.cid || ""),
       page: 1,
       title: selectDownloadTitle(entry?.title, entry?.part, basePage?.title) || basePage?.title || filenameTitle,
+      part: selectDownloadPart(entry?.part, basePage?.part),
+      ownerName: selectDownloadAuthor(entry?.ownerName, basePage?.ownerName),
+      musicTitle: selectDownloadTitle(entry?.musicTitle, basePage?.musicTitle),
+      artist: selectDownloadAuthor(entry?.artist, basePage?.artist),
       filenameTitle,
       seasonTitle: entry?.seasonTitle || filenameTitle,
       multiSeason: !!entry?.multiSeason || !!basePage?.multiSeason,
@@ -3628,6 +4004,10 @@
       // 全部带上 C03 的标题；公共合集标题仍保留在 collectionTitle。
       filenameTitle: entryTitle,
       title: entryTitle,
+      part: selectDownloadPart(entry?.part, entryTitle, basePage?.part),
+      ownerName: selectDownloadAuthor(entry?.ownerName, basePage?.ownerName),
+      musicTitle: selectDownloadTitle(entry?.musicTitle, basePage?.musicTitle),
+      artist: selectDownloadAuthor(entry?.artist, basePage?.artist),
       downloadScope: "collection",
       duration: Number(entry.duration) || 0,
       routeKey: `${basePage.routeKey || basePage.videoId}|collection=${entry.bvid || entry.videoId}|cid=${entry.cid || "unknown"}`,
@@ -3644,7 +4024,7 @@
     if (!viewPromise) {
       const requestController = viewCache ? new AbortController() : null;
       if (requestController && viewControllers) viewControllers.add(requestController);
-      viewPromise = fetchDownloadViewData(page, requestController?.signal || signal)
+      viewPromise = fetchDownloadViewData(page, requestController?.signal || signal, DOWNLOAD_BATCH_RESOLUTION_TIMEOUT)
         .finally(() => requestController && viewControllers?.delete(requestController));
       if (viewCache && cacheKey) viewCache.set(cacheKey, viewPromise);
     }
@@ -3671,6 +4051,7 @@
       aid: normalizedDownloadAid(data.aid) || page.aid,
       cid,
       title: officialTitle,
+      part: selectDownloadPart(selectedPage?.part, page.part, entry.part),
       duration: Number(selectedPage?.duration || data.duration) || page.duration
     };
   }
@@ -3731,6 +4112,10 @@
       episodeIndex: baseModel.episodeIndex || 0,
       multiSeason: !!baseModel.multiSeason,
       title: baseModel.title,
+      part: baseModel.part,
+      ownerName: baseModel.ownerName,
+      musicTitle: baseModel.musicTitle,
+      artist: baseModel.artist,
       filenameTitle: baseModel.filenameTitle,
       seasonTitle: baseModel.seasonTitle,
       duration: baseModel.duration,
@@ -3786,6 +4171,10 @@
         collectionPageCount: isCollection ? entry.collectionPageCount || 1 : 1,
         collectionLabel: isCollection ? itemLabel : "",
         title: isBangumi ? selectDownloadTitle(entry.title, entry.part, baseModel.title) || baseModel.title : entryTitle,
+        part: selectDownloadPart(entry.part, baseModel.part),
+        ownerName: selectDownloadAuthor(entry.ownerName, baseModel.ownerName),
+        musicTitle: selectDownloadTitle(entry.musicTitle, baseModel.musicTitle),
+        artist: selectDownloadAuthor(entry.artist, baseModel.artist),
         collectionTitle: isCollection ? collectionRootTitle : baseModel.collectionTitle,
         filenameTitle: isBangumi
           ? selectDownloadTitle(entry.filenameTitle, baseModel.filenameTitle, baseModel.seasonTitle, baseModel.title) || baseModel.title
@@ -3798,7 +4187,8 @@
         cid: entry.cid
       };
       const taskKind = mode === "audio" ? "audio" : mode === "video" ? "video" : mode === "tracks" ? "tracks" : "merge";
-      const task = makeDownloadTask(mode === "merge" ? "merge" : "tracks", buildDownloadTaskTitle(initialModel, taskKind, targetVideo, targetAudio));
+      const taskMode = mode === "merge" ? "merge" : mode === "audio" ? "audio" : "tracks";
+      const task = makeDownloadTask(taskMode, buildDownloadTaskTitle(initialModel, taskKind, targetVideo, targetAudio));
       task.batchPage = entry.page || 1;
       task.batchIndex = itemIndex;
       task.batchScope = isBangumi ? "bangumi" : isCollection ? "collection" : "episodes";
@@ -3823,7 +4213,13 @@
       const cancel = () => controller.abort("任务已取消");
       task.cancelFunctions.push(cancel);
       let releaseResolution = null;
+      let resolutionTimeout = 0;
+      let resolutionTimedOut = false;
       try {
+        resolutionTimeout = setTimeout(() => {
+          resolutionTimedOut = true;
+          try { controller.abort("官方播放轨道解析超时"); } catch {}
+        }, DOWNLOAD_BATCH_RESOLUTION_TIMEOUT);
         releaseResolution = await context.resolutionGate.acquire(controller.signal);
         const page = isBangumi
           ? makeDownloadBangumiPage(entry, basePage)
@@ -3841,11 +4237,17 @@
         const audio = audioChoice.track;
         if (mode !== "audio" && !video) throw new Error(videoChoice.reason || `${itemLabel} 没有可用视频轨`);
         if (!audio) throw new Error(audioChoice.reason || `${itemLabel} 没有可用音频轨`);
+        clearTimeout(resolutionTimeout);
+        resolutionTimeout = 0;
         const model = {
           ...snapshot,
           title: isBangumi || isCollection
             ? selectDownloadTitle(page.title, entry.title, entry.part, snapshot.title, baseModel.title) || baseModel.title
             : baseModel.title,
+          part: selectDownloadPart(page.part, entry.part, snapshot.part, baseModel.part),
+          ownerName: selectDownloadAuthor(page.ownerName, entry.ownerName, snapshot.ownerName, baseModel.ownerName),
+          musicTitle: selectDownloadTitle(page.musicTitle, entry.musicTitle, snapshot.musicTitle, baseModel.musicTitle),
+          artist: selectDownloadAuthor(page.artist, entry.artist, snapshot.artist, baseModel.artist),
           collectionTitle: isCollection ? collectionRootTitle : snapshot.collectionTitle || baseModel.collectionTitle,
           filenameTitle: isBangumi
             ? selectDownloadTitle(page.filenameTitle, entry.filenameTitle, snapshot.filenameTitle, baseModel.filenameTitle, baseModel.title) || baseModel.title
@@ -3883,11 +4285,15 @@
         await task.donePromise;
       } catch (error) {
         removeDownloadCancel(task, cancel);
-        runDownloadTaskError(task, error);
-        const message = error instanceof Error ? error.message.slice(0, 180) : `${itemLabel} 任务失败`;
+        const resolvedError = resolutionTimedOut
+          ? new Error(`${itemLabel} 获取官方播放轨道超时，请重试`)
+          : error;
+        runDownloadTaskError(task, resolvedError);
+        const message = resolvedError instanceof Error ? resolvedError.message.slice(0, 180) : `${itemLabel} 任务失败`;
         if (isCollection) DOWNLOAD_CAPTURE_STATS.lastCollectionError = message;
         else DOWNLOAD_CAPTURE_STATS.lastBatchError = message;
       } finally {
+        clearTimeout(resolutionTimeout);
         releaseResolution?.();
         context.controllers.delete(controller);
       }

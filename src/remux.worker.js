@@ -121,7 +121,65 @@ async function remux(message) {
   }
 }
 
+async function remuxAudio(message) {
+  const audioInput = new Input({ source: new BufferSource(message.audio), formats: [MP4] });
+  let output;
+  try {
+    const audioTrack = await audioInput.getPrimaryAudioTrack();
+    if (!audioTrack) throw new Error("无法识别音频轨");
+
+    const [audioCodec, audioConfig, audioDuration] = await Promise.all([
+      audioTrack.getCodec(),
+      audioTrack.getDecoderConfig(),
+      getTrackDuration(audioTrack),
+    ]);
+    if (!audioCodec || !audioConfig) throw new Error("音频编码信息不完整");
+    const expectedDuration = Number(message.duration) || 0;
+    const tolerance = Math.max(3, expectedDuration * 0.03);
+    if (expectedDuration > 0 && Math.abs(audioDuration - expectedDuration) > tolerance) {
+      throw new Error(`音频轨时长 ${audioDuration.toFixed(1)} 秒与当前视频 ${expectedDuration.toFixed(1)} 秒不符，已阻止生成文件`);
+    }
+
+    const audioSource = new EncodedAudioPacketSource(audioCodec);
+    const target = new BufferTarget();
+    output = new Output({
+      format: new Mp4OutputFormat({ fastStart: "in-memory" }),
+      target,
+    });
+    output.addAudioTrack(audioSource, { decoderConfig: audioConfig });
+    const tags = {};
+    for (const key of ["title", "artist", "album", "albumArtist", "comment"]) {
+      if (typeof message[key] === "string" && message[key].trim()) tags[key] = message[key].trim();
+    }
+    if (Object.keys(tags).length) output.setMetadataTags(tags);
+    await output.start();
+
+    const audioPackets = await copyPackets(audioTrack, audioSource, audioConfig, "audio", expectedDuration || audioDuration);
+    await output.finalize();
+    if (!target.buffer) throw new Error("音频 MP4 封装未生成输出数据");
+
+    self.postMessage({
+      type: "audio-done",
+      buffer: target.buffer,
+      audioPackets,
+      bytes: target.buffer.byteLength,
+      mimeType: "audio/mp4",
+      extension: "m4a",
+    }, [target.buffer]);
+  } catch (error) {
+    if (output && output.state !== "finalized" && output.state !== "canceled") {
+      try { await output.cancel(); } catch {}
+    }
+    self.postMessage({
+      type: "error",
+      message: error instanceof Error ? error.message.slice(0, 240) : "音频 MP4 封装失败",
+    });
+  } finally {
+    await audioInput.dispose();
+  }
+}
+
 self.addEventListener("message", (event) => {
-  if (event.data?.type !== "remux") return;
-  void remux(event.data);
+  if (event.data?.type === "remux") void remux(event.data);
+  else if (event.data?.type === "remux-audio") void remuxAudio(event.data);
 });

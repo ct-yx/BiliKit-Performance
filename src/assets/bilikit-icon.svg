@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">BiliKit Performance</title>
+  <desc id="desc">BiliKit Performance icon</desc>
+  <rect x="20" y="20" width="472" height="472" rx="124" fill="#fb7299"/>
+  <g fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round">
+    <path d="M212 178 166 104"/>
+    <path d="m300 178 46-74"/>
+  </g>
+  <rect x="108" y="176" width="296" height="236" rx="54" fill="#fff"/>
+  <path d="m234 258 68 36-68 36z" fill="#00aeec" stroke="#00aeec" stroke-width="18" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

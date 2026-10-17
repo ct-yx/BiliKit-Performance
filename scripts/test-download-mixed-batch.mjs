@@ -82,6 +82,8 @@ const fetched = [];
 const batchContext = {
   URL,
   AbortController,
+  setTimeout,
+  clearTimeout,
   location: { href: "https://www.bilibili.com/video/BV1StandaloneVideo/?p=2" },
   navigator: { hardwareConcurrency: 8 },
   DOWNLOAD_CAPTURE_STATS: {},
@@ -124,6 +126,8 @@ const batchContext = {
   selectBatchVideoTrack: () => ({ track: selectedVideoTrack, degraded: false, reason: "" }),
   selectBatchAudioTrack: () => ({ track: selectedAudioTrack, degraded: false, reason: "" }),
   selectDownloadTitle: (...values) => values.find((value) => typeof value === "string" && value.trim()) || "未命名视频",
+  selectDownloadPart: (...values) => values.find((value) => typeof value === "string" && value.trim()) || "",
+  selectDownloadAuthor: (...values) => values.find((value) => typeof value === "string" && value.trim()) || "",
   buildDownloadTaskTitle: (model) => `${model.videoId}_C${model.collectionIndex || 0}_P${model.page}`,
   makeDownloadTask: (mode, title) => {
     let resolveCompletion;
@@ -154,7 +158,7 @@ const entriesForBatch = [
   { downloadScope: "episodes", page: 2, bvid: baseModel.bvid, videoId: baseModel.videoId, aid: baseModel.aid, cid: baseModel.cid, title: baseModel.title, label: "P02", listOrder: 3 }
 ];
 vm.runInNewContext(
-  `${script.slice(scopeStart, scopeEnd)}\n${instrumentedBatch}\nthis.runBatch = runSelectedDownloadBatch;`,
+  `const DOWNLOAD_BATCH_RESOLUTION_TIMEOUT = 45000;\n${script.slice(scopeStart, scopeEnd)}\n${instrumentedBatch}\nthis.runBatch = runSelectedDownloadBatch;`,
   batchContext
 );
 await batchContext.runBatch("merge", entriesForBatch, baseModel, selectedVideoTrack, selectedAudioTrack, "mixed");

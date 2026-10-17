@@ -73,7 +73,7 @@ CDN 处理分为图片和播放资源两条路径：
 - 如果当前页面还没有被捕获的播放响应，打开工作台后会根据 URL 中的 BV/AV ID，通过 B 站官方 `view` 和 `x/player/wbi/playurl` 接口主动补齐当前分 P 的 CID、视频轨和音频轨；不会调用第三方下载接口。
 - 优先复用当前页面最近的合法 WBI playurl 请求；签名过期时在同一次主动获取中构造新的 WBI 请求。请求只执行一次，失败后由“重新获取轨道”按钮触发重试。
 - 支持“合并 MP4”“分别下载音视频轨”和“仅下载音频”。合并使用 Mediabunny 编码包直通重封装，不重新编码；MP4 索引前置，支持 seek。
-- 下载文件名统一使用下划线格式，不使用空格、连字符或加号：合并示例为 `标题_BVxxxx_P01_1080P_AVC_AAC_video_audio.mp4`，视频分轨为 `标题_BVxxxx_P01_1080P_AVC_video.mp4`，音频分轨为 `标题_BVxxxx_P01_AAC_192kbps_audio.m4a`。合并 Blob 使用浏览器原生文件名保存，避免 Edge/Tampermonkey 将 Blob URL 回退为 UUID；分轨下载继续使用下载管理器。仅下载音频时按返回的 MIME 和容器命名：B 站常见的 `audio/mp4` 使用 `.m4a`，原始 FLAC、Ogg/Opus、MP3 等才使用对应扩展名；不会再把音频轨命名为视频用的 `.mp4`。
+- 下载文件名统一使用下划线格式，不使用空格、连字符或加号：合并示例为 `标题_BVxxxx_P01_1080P_AVC_AAC_video_audio.mp4`，视频分轨为 `标题_BVxxxx_P01_1080P_AVC_video.mp4`。仅下载音频使用 `音乐名_作者.m4a`，音乐名自动识别，无法识别时回退视频标题；B 站常见的 `audio/mp4` 使用 `.m4a`，原始 FLAC、Ogg/Opus、MP3 等回退下载使用对应扩展名。音频的 BVID、分 P、CID、编码、码率和来源标题等技术信息写入文件元数据，不再放进仅音频文件名。合并 Blob 使用浏览器原生文件名保存，避免 Edge/Tampermonkey 将 Blob URL 回退为 UUID；分轨下载继续使用下载管理器。
 - 如果 B 站页面标题已经带有当前分 P 前缀（例如 `P2_标题` 或 `P 02 - 标题`），文件名会去掉这个重复前缀，只保留统一的 `_P02` 标识。
 - 下载标题优先读取播放页正文顶部的完整视频标题；B 站标签页在分 P 页面可能只显示 `P2_哔哩哔哩_bilibili`，该短标题不会再作为文件名前缀。
 - 免登录模式下 B 站可能隐藏全局 `__playinfo__`；工作台从当前播放接口响应建立内存快照，并要求请求/响应身份与当前 BVID、CID、路由一致。没有请求身份的全局 `__playinfo__` 只有在页面已确认 CID 且时长一致时才可回退使用；当前播放器时长尚未匹配时会等待。无法确认身份的旧响应会被丢弃，不会借用当前页面标题给它重新贴标签。
@@ -149,7 +149,7 @@ CDN 优选可以进一步设置：
 
 本地开发源码位于 `src/userscript/`，运行 `npm run build` 生成单文件 `bilikit-performance.user.js`；Remux Worker 由构建命令嵌入发布脚本，开发时保留独立源码。修改下载列表或批量任务后，可运行 `npm run test:download-video-list`、`npm run test:download-mixed-batch` 和 `npm run test:download-lifecycle` 回归验证。
 
-仓库结构以 userscript 为业务基准：`src/userscript/` 保存唯一业务源码，`src/extension/` 只保存 Edge MAIN/ISOLATED world 与 Service Worker 适配层，`scripts/lib/primary-bundle.mjs` 负责两种目标共享构建；`extension/` 是可直接加载的生成目录。`npm run build` 会同时更新根目录的 `bilikit-performance.user.js`、Remux Worker 和 Edge 扩展目录，因此 Raw 更新地址始终指向仓库根目录脚本。扩展图标的安全内边距统一由 `src/assets/bilikit-icon.svg` 和 `src/extension/icons/` 维护。
+仓库结构以 userscript 为业务基准：`src/userscript/` 保存唯一业务源码，`src/extension/` 只保存 Edge MAIN/ISOLATED world 与 Service Worker 适配层，`scripts/lib/primary-bundle.mjs` 负责两种目标共享构建；`extension/` 是可直接加载的生成目录。`npm run build:extension` 会生成扩展目录，并自动打包到 `dist/edge-extension/`；ZIP 以 `extension/` 的内容为根目录，构建器会检查 ZIP 根目录含有 `manifest.json` 且不存在多余的 `extension/` 前缀。`npm run build` 也会生成此扩展压缩包，并同时更新根目录的 `bilikit-performance.user.js` 和 Remux Worker；Raw 更新地址始终指向仓库根目录脚本。扩展图标的安全内边距统一由 `src/assets/bilikit-icon.svg` 和 `src/extension/icons/` 维护。
 
 ## 调试接口
 

@@ -10639,9 +10639,6 @@ var BiliKitDownloadProgressModule = (() => {
   const DOWNLOAD_JSON_TIMEOUT = 15000;
   const DOWNLOAD_BATCH_RESOLUTION_TIMEOUT = 45000;
   function getDownloadJsonRequestApi() {
-    if (typeof globalThis !== "undefined" && typeof globalThis.__BILIKIT_EDGE_GM_XMLHTTPREQUEST__ === "function") {
-      return globalThis.__BILIKIT_EDGE_GM_XMLHTTPREQUEST__;
-    }
     return typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : null;
   }
   function canDownloadRequestJson() {
@@ -10694,9 +10691,6 @@ var BiliKitDownloadProgressModule = (() => {
           headers: { Accept: "application/json", ...(options.headers || {}) },
           responseType: "json",
           timeout,
-          // Edge 扩展的 MAIN world 适配器用这个标记直接走 Service Worker，
-          // 避免把未播放番剧的跨域播放请求再次交给页面 fetch。
-          bilikitBridge: Boolean(options.bilikitBridge),
           onload: (response) => {
             let payload = response?.response;
             if ((!payload || typeof payload !== "object") && response?.responseText) {
@@ -10724,11 +10718,7 @@ var BiliKitDownloadProgressModule = (() => {
     const fetchImpl = typeof window !== "undefined" && typeof window.fetch === "function" ? window.fetch.bind(window) : null;
     const requestApi = getDownloadJsonRequestApi();
     const hasGmRequest = !!requestApi;
-    const preferExtensionBridge = Boolean(globalThis.__BILIKIT_EDGE_ADAPTER__) && !!globalThis.__BILIKIT_EDGE_GM_XMLHTTPREQUEST__;
     const timeout = Math.max(1, Number(options.timeout) || DOWNLOAD_JSON_TIMEOUT);
-    if (preferExtensionBridge) {
-      return downloadRequestJsonViaGm(url, { ...options, timeout, bilikitBridge: true });
-    }
     if (fetchImpl) {
       const controller = typeof AbortController === "function" ? new AbortController() : null;
       const externalSignal = options.signal;
@@ -10764,7 +10754,7 @@ var BiliKitDownloadProgressModule = (() => {
       } catch (error) {
         if (externalSignal?.aborted || !hasGmRequest) throw error;
         // 页面 fetch 可能被 CORS、页面 Hook 或网络策略拒绝；超时也必须
-        // 进入同一条 GM/扩展桥接回退路径，不能让批量任务永久停在 0%。
+        // 进入同一条 GM 回退路径，不能让批量任务永久停在 0%。
       } finally {
         clearTimeout(timer);
         rejectAbort = null;

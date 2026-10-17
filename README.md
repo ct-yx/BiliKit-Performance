@@ -149,7 +149,7 @@ CDN 优选可以进一步设置：
 
 本地开发源码位于 `src/userscript/`，运行 `npm run build` 生成单文件 `bilikit-performance.user.js`；Remux Worker 由构建命令嵌入发布脚本，开发时保留独立源码。修改下载列表或批量任务后，可运行 `npm run test:download-video-list`、`npm run test:download-mixed-batch` 和 `npm run test:download-lifecycle` 回归验证。
 
-仓库结构以 userscript 为业务基准：`src/userscript/` 保存唯一业务源码，`src/extension/` 只保存 Edge MAIN/ISOLATED world 与 Service Worker 适配层，`scripts/lib/primary-bundle.mjs` 负责两种目标共享构建；`extension/` 是可直接加载的生成目录。`npm run build:extension` 会生成扩展目录，并自动打包到 `dist/edge-extension/`；ZIP 以 `extension/` 的内容为根目录，构建器会检查 ZIP 根目录含有 `manifest.json` 且不存在多余的 `extension/` 前缀。`npm run build` 也会生成此扩展压缩包，并同时更新根目录的 `bilikit-performance.user.js` 和 Remux Worker；Raw 更新地址始终指向仓库根目录脚本。扩展图标的安全内边距统一由 `src/assets/bilikit-icon.svg` 和 `src/extension/icons/` 维护。
+仓库结构以 userscript 为唯一开发目标：`src/userscript/` 保存业务源码，`scripts/lib/primary-bundle.mjs` 负责生成根目录的单文件 userscript；`npm run build` 只更新 `bilikit-performance.user.js` 和 Remux Worker。Edge 扩展实现已从当前分支移除，旧实现仍可在历史提交 `fe39416` 中追溯，后续不再由本仓库构建或维护扩展目录、扩展 ZIP 和扩展桥接层。
 
 ## 调试接口
 
@@ -223,13 +223,13 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 ```bash
 python3 /Users/chenhong/.codex/skills/tampermonkey-build/scripts/validate_userscript.py bilikit-performance.user.js
 node --check bilikit-performance.user.js
-node scripts/test-download-extension.mjs
+node scripts/test-download-file-extension.mjs
 node scripts/test-download-filename.mjs
 node scripts/test-download-mixed-batch.mjs
 node scripts/test-download-save.mjs
 ```
 
-静态检查通过不等于真实 Edge 回归完成。首页刷新、搜索结果、悬停预览、播放页、MCDN、布局稳定和扩展联动应在目标浏览器中分别验证。
+静态检查通过不等于真实 Edge 回归完成。首页刷新、搜索结果、悬停预览、播放页、MCDN、布局稳定和第三方浏览器扩展联动应在目标浏览器中分别验证。
 
 ## 许可证
 

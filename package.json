@@ -4,13 +4,12 @@
   "version": "0.6.49",
   "description": "Builds and embeds the on-demand BiliKit DASH remux worker",
   "scripts": {
-    "build": "npm run build:remux-worker && npm run build:userscript && npm run build:extension",
+    "build": "npm run build:remux-worker && npm run build:userscript",
     "build:userscript": "node scripts/build-userscript.mjs",
-    "build:extension": "node scripts/build-extension.mjs",
     "build:remux-worker": "node scripts/build-remux-worker.mjs",
     "test:download-identity": "node scripts/test-download-identity.mjs",
     "test:download-active-fetch": "node scripts/test-download-active-fetch.mjs",
-    "test:download-extension": "node scripts/test-download-extension.mjs",
+    "test:download-file-extension": "node scripts/test-download-file-extension.mjs",
     "test:download-audio": "node scripts/test-download-audio.mjs",
     "test:download-filename": "node scripts/test-download-filename.mjs",
     "test:download-batch": "node scripts/test-download-batch.mjs",
@@ -26,11 +25,6 @@
     "test:home-feed-auto-load": "node scripts/test-home-feed-auto-load.mjs",
     "test:network-hooks": "node scripts/test-network-hooks.mjs",
     "test:userscript-build": "node scripts/test-userscript-build.mjs",
-    "test:extension-build": "node scripts/test-extension-build.mjs",
-    "test:extension-content-bridge": "node scripts/test-extension-content-bridge.mjs",
-    "test:extension-media-bridge": "node scripts/test-extension-media-bridge.mjs",
-    "test:extension-json-bridge": "node scripts/test-extension-json-bridge.mjs",
-    "test:extension-video-list": "node scripts/test-extension-video-list.mjs",
     "test:favorites-fix": "node scripts/test-favorites-fix.mjs"
   },
   "dependencies": {

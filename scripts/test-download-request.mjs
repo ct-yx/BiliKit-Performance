@@ -83,19 +83,7 @@ const timeoutResult = await context.testApi.downloadRequestJson(
   (error) => ({ type: "error", error })
 );
 if (timeoutResult.type !== "error" || timeoutResult.error?.message !== "请求超时") {
-  throw new Error(`扩展请求超时被错误标记为取消：${timeoutResult.error?.message || timeoutResult.type}`);
+  throw new Error(`GM 请求超时被错误标记为取消：${timeoutResult.error?.message || timeoutResult.type}`);
 }
 
-context.__BILIKIT_EDGE_ADAPTER__ = true;
-context.__BILIKIT_EDGE_GM_XMLHTTPREQUEST__ = context.GM_xmlhttpRequest;
-context.window.fetch = async () => {
-  throw new Error("Edge 扩展请求不应先走页面 fetch");
-};
-const edgeResponse = await context.testApi.downloadRequestJson(
-  "https://api.bilibili.com/pgc/player/web/playurl?ep_id=3"
-);
-if (!edgeResponse.ok || requests.length !== 4 || fetchCalls.some((url) => url.includes("ep_id=3"))) {
-  throw new Error(`Edge 扩展没有优先使用 GM/桥接请求：${JSON.stringify({ edgeResponse, requests, fetchCalls })}`);
-}
-
-console.log("下载 JSON 请求测试通过：页面 fetch 失败/挂起会回退，Edge 扩展优先使用 GM/扩展桥接请求。");
+console.log("下载 JSON 请求测试通过：页面 fetch 失败/挂起会回退 GM 请求，超时和取消状态可区分。");

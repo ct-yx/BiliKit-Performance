@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BiliKit Performance</title>
+  <meta name="description" content="面向 Bilibili 的 Edge / Chromium userscript：首页与 CDN 性能优化、播放器下载工作台、收藏夹修复。">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20512%20512%22%3E%3Crect%20x%3D%2220%22%20y%3D%2220%22%20width%3D%22472%22%20height%3D%22472%22%20rx%3D%22124%22%20fill%3D%22%23fb7299%22%2F%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%2226%22%20stroke-linecap%3D%22round%22%3E%3Cpath%20d%3D%22M212%20178%20166%20104%22%2F%3E%3Cpath%20d%3D%22m300%20178%2046-74%22%2F%3E%3C%2Fg%3E%3Crect%20x%3D%22108%22%20y%3D%22176%22%20width%3D%22296%22%20height%3D%22236%22%20rx%3D%2254%22%20fill%3D%22%23fff%22%2F%3E%3Cpath%20d%3D%22m234%20258%2068%2036-68%2036z%22%20fill%3D%22%2300aeec%22%20stroke%3D%22%2300aeec%22%20stroke-width%3D%2218%22%20stroke-linejoin%3D%22round%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E">
+  <style>
+    :root {
+      --bg: #fafafa;
+      --fg: #18191c;
+      --muted: #61666d;
+      --line: #e3e5e7;
+      --card: #ffffff;
+      --pink-ink: #c6305a;
+      --blue: #00aeec;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111214;
+        --fg: #e7e8ea;
+        --muted: #9499a0;
+        --line: #2a2c30;
+        --card: #18191c;
+        --pink-ink: #ff8fb0;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--pink-ink); text-underline-offset: 3px; }
+    a:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 3px;
+      border-radius: 8px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+    /* 首屏：只放图标、名称和开发者 */
+    .cover {
+      position: relative;
+      min-height: 100vh;
+      min-height: 100svh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 48px 24px;
+    }
+    .cover img {
+      width: clamp(96px, 18vw, 148px);
+      height: auto;
+      margin-bottom: 32px;
+      filter: drop-shadow(0 12px 32px rgba(251, 114, 153, .28));
+    }
+    .cover h1 {
+      font-size: clamp(40px, 8vw, 76px);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin: 0 0 20px;
+    }
+    .cover .tagline { margin: 0 0 28px; font-size: clamp(17px, 2.4vw, 21px); }
+    .cover .author { margin: 0; color: var(--muted); font-size: 15px; }
+    .cover .author a { color: var(--fg); text-decoration: none; font-weight: 500; }
+    .cover .author a:hover { text-decoration: underline; }
+    .cover-main {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    /* 首屏按钮：横屏排成一行放在开发者下方，竖屏改为底部纵向排列 */
+    .cover-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 40px;
+    }
+    .cover-actions .btn { justify-content: center; min-width: 132px; }
+    .scroll-hint {
+      position: absolute;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .scroll-hint svg { animation: nudge 1.8s ease-in-out infinite; }
+    @keyframes nudge {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(6px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .scroll-hint svg { animation: none; }
+    }
+
+    /* 功能介绍 */
+    .intro { padding: 96px 0 32px; text-align: center; }
+    .intro h2 { font-size: clamp(26px, 4vw, 34px); margin: 0 0 12px; }
+    .intro p { color: var(--muted); max-width: 600px; margin: 0 auto; }
+
+    .feature {
+      display: grid;
+      grid-template-columns: 1fr 1.3fr;
+      gap: 48px;
+      align-items: center;
+      padding: 56px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .feature:nth-of-type(even) .text { order: 2; }
+    .feature .num { font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--pink-ink); }
+    .feature h3 { font-size: 24px; margin: 10px 0 12px; }
+    .feature p { color: var(--muted); margin: 0 0 12px; }
+    .feature ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 15px; }
+    .feature li { margin-bottom: 6px; }
+
+    .media {
+      border-radius: 14px;
+      overflow: hidden;
+      background: var(--card);
+      border: 1px solid var(--line);
+    }
+
+    /* 演示截图和录屏：按素材原始比例显示，视频进入视口才加载播放 */
+    .shot { margin: 0; min-width: 0; }
+    .shot video, .shot img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--card);
+      box-shadow: 0 12px 32px -18px rgba(0, 0, 0, .25);
+    }
+    .shot figcaption { margin-top: 10px; font-size: 13px; color: var(--muted); text-align: center; }
+    .media-stack { display: grid; gap: 20px; min-width: 0; }
+
+    /* 无素材的功能：通栏文字，要点在宽屏下分两列 */
+    .feature.no-media { grid-template-columns: 1fr; }
+    .feature.no-media .text { order: 0; }
+    .feature.no-media ul { columns: 2; column-gap: 48px; }
+    .feature.no-media li { break-inside: avoid; }
+    @media (max-width: 760px), (orientation: portrait) {
+      .feature.no-media ul { columns: 1; }
+    }
+
+    /* CDN 测速动画：节点行绝对定位，按延迟排序后用 transform 平移到新位置 */
+    .cdn-demo { aspect-ratio: auto; padding: 18px 20px 20px; }
+    .cdn-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+    .cdn-head .pulse {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      margin-right: 8px;
+      vertical-align: 1px;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: .3; } }
+    .cdn-note { font-size: 12px; }
+    .cdn-list {
+      --row: 52px;
+      --step: 60px;
+      position: relative;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      height: calc(var(--step) * 5 - 8px);
+    }
+    .cdn-row {
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: var(--row);
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+      overflow: hidden;
+      transition: transform .6s cubic-bezier(.2, .8, .2, 1), opacity .4s ease, border-color .3s ease;
+    }
+    .cdn-row.entering, .cdn-row.leaving { opacity: 0; }
+    .cdn-row .rank { font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+    .cdn-row > span:nth-child(2) { min-width: 0; }
+    .cdn-row .name { font-size: 14px; font-weight: 600; line-height: 1.3; }
+    .cdn-row .host {
+      display: block;
+      font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cdn-row .ms { white-space: nowrap; font: 600 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .cdn-row .bar {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 3px;
+      background: var(--line);
+      transition: width .6s ease;
+    }
+    .cdn-row.best { border-color: var(--pink-ink); }
+    .cdn-row.best .rank, .cdn-row.best .ms { color: var(--pink-ink); }
+    .cdn-row.best .bar { background: var(--pink-ink); }
+    @media (prefers-reduced-motion: reduce) {
+      .cdn-row, .cdn-row .bar { transition: none; }
+      .cdn-head .pulse { animation: none; }
+    }
+
+    @media (max-width: 760px), (orientation: portrait) {
+      .feature { grid-template-columns: 1fr; gap: 24px; }
+      .feature:nth-of-type(even) .text { order: 0; }
+    }
+
+    /* 安装 */
+    .install { padding: 96px 0; text-align: center; }
+    .install h2 { font-size: clamp(26px, 4vw, 34px); margin: 0 0 32px; }
+    .install-media {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+      margin: 0 auto 48px;
+    }
+    @media (max-width: 760px), (orientation: portrait) {
+      .install-media { grid-template-columns: 1fr; }
+    }
+    .install ol {
+      list-style: none;
+      counter-reset: step;
+      padding: 0;
+      margin: 0 auto 36px;
+      max-width: 520px;
+      text-align: left;
+    }
+    .install li {
+      counter-increment: step;
+      display: flex;
+      gap: 14px;
+      align-items: baseline;
+      margin-bottom: 16px;
+    }
+    .install li::before {
+      content: counter(step);
+      flex: none;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    code {
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 1px 6px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      height: 46px;
+      padding: 0 24px;
+      border-radius: 999px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      text-decoration: none;
+      /* 品牌粉 #fb7299 上的白字对比度不足，按钮使用加深的渐变 */
+      background: linear-gradient(135deg, #d63d6e, #c2325f);
+      color: #fff;
+      box-shadow: 0 6px 18px -6px rgba(214, 61, 110, .55);
+      transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease, background-color .15s ease;
+    }
+    .btn svg { width: 18px; height: 18px; flex: none; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 10px 24px -8px rgba(214, 61, 110, .6); }
+    .btn:active { transform: translateY(0); }
+    .btn.ghost {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--line);
+      box-shadow: none;
+    }
+    .btn.ghost:hover { border-color: var(--muted); background: var(--card); box-shadow: none; }
+    .btn.ghost .heart { color: var(--pink-ink); }
+    @media (prefers-reduced-motion: reduce) {
+      .btn, .btn:hover { transition: none; transform: none; }
+    }
+
+    /* 竖屏：名称区居中占满剩余空间，三个按钮固定在首屏底部；下滑提示让位给按钮 */
+    @media (orientation: portrait) {
+      .cover { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
+      .cover-main { flex: 1; }
+      .cover-actions {
+        flex-direction: column;
+        flex-wrap: nowrap;
+        width: 100%;
+        max-width: 360px;
+        margin-top: 24px;
+      }
+      .scroll-hint { display: none; }
+    }
+    /* 横屏矮屏（手机横放）：缩小首屏元素，避免与下滑提示重叠 */
+    @media (orientation: landscape) and (max-height: 560px) {
+      .cover { padding: 24px 24px 64px; }
+      .cover img { width: 64px; margin-bottom: 12px; }
+      .cover h1 { font-size: 36px; margin-bottom: 8px; }
+      .cover .tagline { margin-bottom: 8px; font-size: 16px; }
+      .cover-actions { margin-top: 20px; }
+      .cover-actions .btn { padding: 8px 20px; font-size: 15px; }
+      .scroll-hint { bottom: 12px; }
+    }
+
+    .install .note { color: var(--muted); font-size: 14px; margin: 20px 0 0; }
+
+    footer {
+      padding: 32px 0 48px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+    footer a { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header class="cover">
+    <div class="cover-main">
+      <img src="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20512%20512%22%3E%3Crect%20x%3D%2220%22%20y%3D%2220%22%20width%3D%22472%22%20height%3D%22472%22%20rx%3D%22124%22%20fill%3D%22%23fb7299%22%2F%3E%3Cg%20fill%3D%22none%22%20stroke%3D%22%23fff%22%20stroke-width%3D%2226%22%20stroke-linecap%3D%22round%22%3E%3Cpath%20d%3D%22M212%20178%20166%20104%22%2F%3E%3Cpath%20d%3D%22m300%20178%2046-74%22%2F%3E%3C%2Fg%3E%3Crect%20x%3D%22108%22%20y%3D%22176%22%20width%3D%22296%22%20height%3D%22236%22%20rx%3D%2254%22%20fill%3D%22%23fff%22%2F%3E%3Cpath%20d%3D%22m234%20258%2068%2036-68%2036z%22%20fill%3D%22%2300aeec%22%20stroke%3D%22%2300aeec%22%20stroke-width%3D%2218%22%20stroke-linejoin%3D%22round%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E" alt="BiliKit Performance 图标">
+      <h1>BiliKit Performance</h1>
+      <p class="tagline">让 B 站加载更快、下载更顺手的 userscript</p>
+      <p class="author">开发者 <a href="https://github.com/ct-yx">ct-yx</a></p>
+    </div>
+    <nav class="cover-actions" aria-label="快捷操作">
+      <a class="btn" href="https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+        安装脚本
+      </a>
+      <a class="btn ghost" href="https://github.com/ct-yx/BiliKit-Performance">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.58 9.58 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>
+        进入仓库
+      </a>
+      <!-- TODO: 赞助链接待补充 -->
+      <a class="btn ghost" href="#" data-todo="sponsor">
+        <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 3 4.5 6.8 4.5c2.1 0 3.6 1.2 5.2 3 1.6-1.8 3.1-3 5.2-3 3.8 0 5.9 3.9 4.4 7.3C19.5 16.4 12 21 12 21Z"/></svg>
+        赞助
+      </a>
+    </nav>
+    <a class="scroll-hint" href="#features">
+      了解功能
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </a>
+  </header>
+
+  <main class="wrap">
+    <div class="intro" id="features">
+      <h2>功能介绍</h2>
+      <p>面向 Bilibili 的 Edge / Chromium userscript。优化首页、搜索页和播放页的网络调度与 CDN 使用，并在播放器右键菜单中提供下载工作台。</p>
+    </div>
+
+    <section class="feature no-media" aria-labelledby="f1">
+      <div class="text">
+        <span class="num">01</span>
+        <h3 id="f1">首页信息流</h3>
+        <p>首屏更快，下滑更稳。</p>
+        <ul>
+          <li>页面加载初期预连接常用接口和图片域名</li>
+          <li>提升推荐接口优先级，可见封面优先加载，视口下方预加载 4–10 行</li>
+          <li>默认隐藏广告楼层，不影响普通视频卡片</li>
+          <li>停止下滑约 3 秒后自动加载后续内容</li>
+          <li>修正网格错位、抖动和频闪</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="feature" aria-labelledby="f2">
+      <div class="text">
+        <span class="num">02</span>
+        <h3 id="f2">CDN 优选</h3>
+        <p>根据地域和实测结果选择图片与播放节点。</p>
+        <ul>
+          <li>区分国内和境外出口，地域未确认时保持原始地址</li>
+          <li>图片节点实测后短期缓存，连续失败才切换</li>
+          <li>播放地址替换覆盖播放页、首页和搜索页的悬停预览</li>
+          <li>不伪造签名，不改清晰度和播放器交互</li>
+        </ul>
+      </div>
+      <div class="media cdn-demo" role="img" aria-label="CDN 节点测速排序动画：多个镜像节点持续测速，最快的节点排在最前">
+        <div class="cdn-head" aria-hidden="true">
+          <span><i class="pulse"></i>测速中</span>
+          <span class="cdn-note">示意动画，非实时数据</span>
+        </div>
+        <ol class="cdn-list" id="cdn-list" aria-hidden="true"></ol>
+      </div>
+    </section>
+
+    <section class="feature" aria-labelledby="f3">
+      <div class="text">
+        <span class="num">03</span>
+        <h3 id="f3">下载工作台</h3>
+        <p>在播放器右键菜单中打开，默认选中当前视频和当前分 P。</p>
+        <ul>
+          <li>可合并为 MP4，直通封装不重新编码；也可分轨下载或仅导出音频</li>
+          <li>统一的视频列表，支持分 P、合集和番剧多季度批量选择</li>
+          <li>清晰度和编码分开选择，无法匹配时自动降级</li>
+          <li>显示文件大小、下载与转码进度、总速度和预计时间</li>
+          <li>文件名格式统一，音频自动写入元数据</li>
+        </ul>
+      </div>
+      <div class="media-stack">
+        <figure class="shot">
+          <video data-src="assets/download-mp4.mp4" poster="assets/download-mp4.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="下载工作台合并 MP4 演示"></video>
+          <figcaption>合并下载 MP4</figcaption>
+        </figure>
+        <figure class="shot">
+          <video data-src="assets/download-audio.mp4" poster="assets/download-audio.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="下载工作台仅下载音频演示"></video>
+          <figcaption>仅下载音频</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="feature" aria-labelledby="f4">
+      <div class="text">
+        <span class="num">04</span>
+        <h3 id="f4">收藏夹修复</h3>
+        <p>为“已失效视频”找回能确认的信息。</p>
+        <ul>
+          <li>恢复标题、封面、简介、UP 主、时长和分 P</li>
+          <li>补回 UP 主设为“仅自己可见”的隐藏收藏</li>
+          <li>悬停失效封面可查看完整资料面板</li>
+          <li>卡片菜单可复制信息、查看封面和清除缓存</li>
+        </ul>
+      </div>
+      <figure class="shot">
+        <img src="assets/favorites-fix.png" width="2818" height="1508" loading="lazy" alt="收藏夹中的失效视频卡片，悬停后显示 BiliKit 资料面板，包含简介和分 P 列表">
+      </figure>
+    </section>
+
+    <section class="feature" aria-labelledby="f5">
+      <div class="text">
+        <span class="num">05</span>
+        <h3 id="f5">播放交互</h3>
+        <p>按自己的习惯打开和切换视频。</p>
+        <ul>
+          <li>视频卡片可用抽屉、新标签页或当前页打开</li>
+          <li>抽屉支持网页全屏</li>
+          <li>“回程”胶囊记录导航，返回时可恢复播放进度</li>
+          <li>正式播放时防止屏幕休眠</li>
+        </ul>
+      </div>
+      <figure class="shot">
+          <video data-src="assets/return-nav.mp4" poster="assets/return-nav.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="回程功能演示：在视频间跳转后返回上一个视频"></video>
+        </figure>
+    </section>
+
+    <section class="feature" aria-labelledby="f6">
+      <div class="text">
+        <span class="num">06</span>
+        <h3 id="f6">设置面板</h3>
+        <p>点击首页右下角的齿轮打开，每个模块都可以单独开关。</p>
+        <ul>
+          <li>CDN 优选、主题同步、评论信息、防睡眠</li>
+          <li>免登录、回程、首页加载、收藏夹修复</li>
+          <li>下载工作台的进度显示和刷新间隔</li>
+        </ul>
+      </div>
+      <figure class="shot">
+        <img src="assets/settings.png" width="1280" height="1120" loading="lazy" alt="BiliKit Performance 设置面板，左侧为模块列表，右侧为首页加载的选项">
+      </figure>
+    </section>
+
+    <section class="install" id="install" aria-labelledby="install-title">
+      <h2 id="install-title">安装</h2>
+      <div class="install-media">
+        <figure class="shot">
+          <video data-src="assets/install-tampermonkey.mp4" poster="assets/install-tampermonkey.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="从 Edge 加载项商店安装 Tampermonkey 的演示"></video>
+          <figcaption>第 1 步：安装 Tampermonkey</figcaption>
+        </figure>
+        <figure class="shot">
+          <video data-src="assets/install-script.mp4" poster="assets/install-script.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="点击安装按钮并在 Tampermonkey 中确认安装脚本的演示"></video>
+          <figcaption>第 2 步：安装脚本</figcaption>
+        </figure>
+      </div>
+      <ol>
+        <li><span>安装 <a href="https://www.tampermonkey.net/">Tampermonkey</a> 或其他兼容的 userscript 管理器。</span></li>
+        <li><span>点击下方按钮，在管理器中确认安装。</span></li>
+        <li><span>打开 Bilibili，确认脚本名称为 <code>BiliKit Performance (Edge/Chromium)</code>。</span></li>
+      </ol>
+      <a class="btn" href="https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js">安装脚本</a>
+      <p class="note">如果装过旧版 BiliKit Core，请先停用它，避免两个脚本同时修改页面。</p>
+    </section>
+  </main>
+
+  <footer>
+    <a href="https://github.com/ct-yx/BiliKit-Performance">GitHub</a>
+    · <a href="https://github.com/ct-yx/BiliKit-Performance/blob/main/LICENSE">MIT License</a>
+    · 合并功能使用 <a href="https://github.com/Vanilagy/mediabunny">Mediabunny</a>（MPL-2.0）
+  </footer>
+  <script>
+    // 演示录屏：进入视口时才加载并播放，离开时暂停；减少动态效果时改为手动播放
+    (() => {
+      const videos = document.querySelectorAll("video[data-src]");
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const load = (v) => {
+        if (!v.src) v.src = v.dataset.src;
+      };
+      if (reduce || !("IntersectionObserver" in window)) {
+        videos.forEach((v) => {
+          v.preload = "metadata";
+          v.controls = true;
+          load(v);
+        });
+        return;
+      }
+      const io = new IntersectionObserver((entries) => {
+        entries.forEach(({ target: v, isIntersecting }) => {
+          if (isIntersecting) {
+            load(v);
+            v.play().catch(() => { v.controls = true; });
+          } else {
+            v.pause();
+          }
+        });
+      }, { rootMargin: "200px 0px", threshold: 0.15 });
+      videos.forEach((v) => io.observe(v));
+    })();
+
+    // CDN 测速示意动画：节点取自脚本设置中的国内镜像选项，延迟为随机模拟值
+    (() => {
+      const POOL = [
+        ["华为 hw", "upos-sz-mirrorhw.bilivideo.com"],
+        ["百度 bda2", "upos-sz-upcdnbda2.bilivideo.com"],
+        ["阿里 ali", "upos-sz-mirrorali.bilivideo.com"],
+        ["阿里 ali02", "upos-sz-mirrorali02.bilivideo.com"],
+        ["阿里 alib", "upos-sz-mirroralib.bilivideo.com"],
+        ["阿里 alio1", "upos-sz-mirroralio1.bilivideo.com"],
+        ["腾讯 cos", "upos-sz-mirrorcos.bilivideo.com"],
+        ["腾讯 cosb", "upos-sz-mirrorcosb.bilivideo.com"],
+        ["华为 08c", "upos-sz-mirror08c.bilivideo.com"],
+        ["华为 08h", "upos-sz-mirror08h.bilivideo.com"]
+      ];
+      const VISIBLE = 5;
+      const TICK_MS = 1400;
+      const SWAP_EVERY = 4;
+      const list = document.getElementById("cdn-list");
+      if (!list) return;
+
+      const rand = (min, max) => min + Math.random() * (max - min);
+      const shuffled = POOL.map((p) => ({ name: p[0], host: p[1] })).sort(() => Math.random() - 0.5);
+      const active = shuffled.slice(0, VISIBLE);
+      const idle = shuffled.slice(VISIBLE);
+
+      function createRow(node) {
+        node.base = rand(28, 90);
+        node.ms = node.base;
+        const li = document.createElement("li");
+        li.className = "cdn-row entering";
+        li.innerHTML = '<span class="rank"></span><span><span class="name"></span><span class="host"></span></span><span class="ms"></span><span class="bar"></span>';
+        li.querySelector(".name").textContent = node.name;
+        li.querySelector(".host").textContent = node.host;
+        node.el = li;
+        list.appendChild(li);
+        return node;
+      }
+
+      function render() {
+        const step = parseFloat(getComputedStyle(list).getPropertyValue("--step")) || 60;
+        const sorted = [...active].sort((a, b) => a.ms - b.ms);
+        const fastest = sorted[0].ms;
+        sorted.forEach((node, i) => {
+          const el = node.el;
+          el.style.transform = `translateY(${i * step}px)`;
+          el.classList.toggle("best", i === 0);
+          el.querySelector(".rank").textContent = String(i + 1);
+          el.querySelector(".ms").textContent = `${Math.round(node.ms)} ms`;
+          el.querySelector(".bar").style.width = `${Math.round((fastest / node.ms) * 100)}%`;
+        });
+      }
+
+      // 新行先在目标位置透明出现，下一帧再淡入
+      function reveal(node) {
+        requestAnimationFrame(() => requestAnimationFrame(() => node.el.classList.remove("entering")));
+      }
+
+      active.forEach(createRow);
+      render();
+      active.forEach(reveal);
+
+      let tick = 0;
+      function step() {
+        tick += 1;
+        active.forEach((node) => {
+          node.base = Math.min(110, Math.max(20, node.base + rand(-6, 6)));
+          node.ms = Math.max(12, node.base + rand(-14, 14));
+        });
+        // 定期把最慢的节点换成候补节点，让 10 个节点轮流出现
+        if (tick % SWAP_EVERY === 0 && idle.length) {
+          const slowest = active.reduce((a, b) => (b.ms > a.ms ? b : a));
+          const next = idle.splice(Math.floor(Math.random() * idle.length), 1)[0];
+          active.splice(active.indexOf(slowest), 1, createRow(next));
+          idle.push(slowest);
+          slowest.el.classList.add("leaving");
+          const old = slowest.el;
+          setTimeout(() => old.remove(), 400);
+          render();
+          reveal(next);
+          return;
+        }
+        render();
+      }
+
+      // 只在动画区域可见且页面在前台时运行
+      let timer = 0;
+      let inView = false;
+      const sync = () => {
+        const run = inView && !document.hidden;
+        if (run && !timer) timer = setInterval(step, TICK_MS);
+        if (!run && timer) { clearInterval(timer); timer = 0; }
+      };
+      new IntersectionObserver((entries) => {
+        inView = entries[0].isIntersecting;
+        sync();
+      }).observe(list);
+      document.addEventListener("visibilitychange", sync);
+    })();
+  </script>
+</body>
+</html>

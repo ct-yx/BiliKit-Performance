@@ -1,6 +1,6 @@
 # BiliKit Performance
 
-面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用，并在播放器右键菜单中提供当前视频下载工作台。
+面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用。
 
 当前版本：**0.7.0**
 
@@ -43,7 +43,7 @@ CDN 处理分为图片和播放资源两条路径：
 - 图片节点在 `i0` / `i1` / `i2.hdslb.com` 中进行实际探测，并复用短期缓存，避免每次刷新都重复测速。
 - 网络恢复或连接类型变化后才重新选择节点；连续资源失败后才切换后续请求使用的节点。
 - 已经加载完成并正在显示的图片不会为了换节点而重新下载；加载中的资源或新加入信息流的资源才会按当前节点处理。
-- 播放页、首页和搜索页的精确 `playurl` 响应会处理可替换的 `bilivideo` 直连地址，也覆盖 B 站原生悬停预览的播放地址。播放页下载工作台另有独立的只读捕获器，不依赖 CDN 改写或免登录模块。
+- 播放页、首页和搜索页的精确 `playurl` 响应会处理可替换的 `bilivideo` 直连地址，也覆盖 B 站原生悬停预览的播放地址。
 - MCDN / `edge.mountaintoys.cn` 等带签名的代理地址不会被简单替换 Host；如果 B 站返回了签名完整的直连备用地址，会优先使用该备用地址并保留原代理回退。
 - 不扫描普通 JSON，不伪造 MCDN 签名，不改变清晰度、预览内容或播放器交互。
 
@@ -67,32 +67,6 @@ CDN 处理分为图片和播放资源两条路径：
 - 只在当前收藏模块已经接管的卡片标题区域做局部清理；如果旧版脚本再次写回加载占位，BiliKit 会清除该占位，但仍建议停用重复安装的旧版收藏夹脚本。
 - 卡片右上角的 BiliKit 菜单可复制视频信息、查看有效封面、打开 UP 主空间和清除单条本地缓存；不拦截 B 站原生跳转、稍后再看和收藏操作。
 - 缓存键为 `bilikit:favorites-fix:v1`，只保存公开元数据和有限时间的命中/未命中状态，不保存 Cookie、签名 URL、媒体 URL 或第三方脚本代码；未命中结果会在一段时间后重试。可在设置中的“收藏夹修复”模块关闭隐藏条目恢复或卡片工具菜单。
-
-### 播放器下载工作台
-
-- 在播放器右键菜单末尾增加幂等的“BiliKit 视频下载工作台”入口；工作台复用 BiliKit 抽屉外壳，不再打开第二个播放器。
-- 读取当前播放页已有的 DASH 信息，默认当前分 P 和清晰度；“清晰度”与“编码”分开选择，编码选项随清晰度变化。
-- 如果当前页面还没有被捕获的播放响应，打开工作台后会根据 URL 中的 BV/AV ID，通过 B 站官方 `view` 和 `x/player/wbi/playurl` 接口主动补齐当前分 P 的 CID、视频轨和音频轨；不会调用第三方下载接口。
-- 优先复用当前页面最近的合法 WBI playurl 请求；签名过期时在同一次主动获取中构造新的 WBI 请求。请求只执行一次，失败后由“重新获取轨道”按钮触发重试。
-- 支持“合并 MP4”“分别下载音视频轨”和“仅下载音频”。合并使用 Mediabunny 编码包直通重封装，不重新编码；MP4 索引前置，支持 seek。
-- 下载文件名统一使用下划线格式，不使用空格、连字符或加号：合并示例为 `标题_BVxxxx_P01_1080P_AVC_AAC_video_audio.mp4`，视频分轨为 `标题_BVxxxx_P01_1080P_AVC_video.mp4`。仅下载音频使用 `音乐名_作者.m4a`，音乐名自动识别，无法识别时回退视频标题；B 站常见的 `audio/mp4` 使用 `.m4a`，原始 FLAC、Ogg/Opus、MP3 等回退下载使用对应扩展名。音频的 BVID、分 P、CID、编码、码率和来源标题等技术信息写入文件元数据，不再放进仅音频文件名。合并 Blob 使用浏览器原生文件名保存，避免 Edge/Tampermonkey 将 Blob URL 回退为 UUID；分轨下载继续使用下载管理器。
-- 如果 B 站页面标题已经带有当前分 P 前缀（例如 `P2_标题` 或 `P 02 - 标题`），文件名会去掉这个重复前缀，只保留统一的 `_P02` 标识。
-- 下载标题优先读取播放页正文顶部的完整视频标题；B 站标签页在分 P 页面可能只显示 `P2_哔哩哔哩_bilibili`，该短标题不会再作为文件名前缀。
-- 免登录模式下 B 站可能隐藏全局 `__playinfo__`；工作台从当前播放接口响应建立内存快照，并要求请求/响应身份与当前 BVID、CID、路由一致。没有请求身份的全局 `__playinfo__` 只有在页面已确认 CID 且时长一致时才可回退使用；当前播放器时长尚未匹配时会等待。无法确认身份的旧响应会被丢弃，不会借用当前页面标题给它重新贴标签。
-- 分轨使用页面下发的原始签名地址；快照在 CDN 改写前复制，并绑定当前 BVID、CID、P 和路由。合并通过 Tampermonkey 请求 API 读取轨道。签名地址不展示、不写入存储或任务记录；任务只在当前页面内存中。
-- 下载前会验证轨道资源总长度；合并前还会核对视频轨、音频轨与当前视频时长。遇到部分响应、长度不符或时长不符时任务会失败，不生成错误 MP4；CDN 不提供可验证长度时也会停止下载。
-- Mediabunny 1.59.1 的 MP4 Worker 经 tree-shaking 后为 **221,778 字节（gzip 59,328 字节）**；Worker 代码内嵌在单文件 userscript 中，仅点击“合并 MP4”时创建，不再依赖远程 `@resource`。
-- Worker 源码：[src/remux.worker.js](src/remux.worker.js)。开发时可单独运行 `npm run build:remux-worker` 生成 Worker；发布单文件 userscript 时运行 `npm ci && npm run build`，由构建流程先生成 Worker、再将它内嵌到 userscript。依赖锁定 Mediabunny 1.59.1 和 esbuild 0.28.2。
-- 刷新或切换播放页后，URL 中 `/video/BV.../`（也兼容 `/video/av.../`）是当前视频身份的最高优先级，BV 正文大小写按 B 站规则保留，后面的 `?spm_id_from=...`、`?vd_source=...` 等跟踪参数不会影响识别。若页面状态缺失 CID，会优先读取播放器 `getManifest()`，再按 URL 的 `p` 参数选择分 P；轨道优先通过与当前视频 ID/CID 匹配的 playurl 响应重新捕获，没有捕获结果时，打开工作台会主动重放当前页面的官方播放接口。页面内嵌的 `__playinfo__` 只有在页面状态也确认同一视频且时长一致时才作为回退，`last_play_cid` 不会单独证明当前视频。SPA URL 变化会立即清空旧轨道，播放器时长尚未更新时工作台保持等待，不会继续显示上一个视频的轨道或签名地址；主动请求和捕获响应都必须再次通过当前 BVID/AV、CID、分 P 和时长校验。签名地址仍只留在页面内存。
-- 同一 BV 下的多个 P 会读取播放器选集目录和 B 站官方 `view` 接口，显示 P 编号、分 P 标题、CID 和时长；默认只勾选当前 P，可全选或逐项选择。官方目录与页面 `data-cid` 不一致的 P 会标记为不一致并跳过，避免串片；不同 BV 的推荐视频列表不纳入本功能。
-- 下载工作台统一使用一个**视频列表**：没有不同 BV 合集时显示同 BV 的 `P01/P02`；确认存在合集后，每个合集 BV 显示为 `C01/C02` 父项，父项复选会选择该 BV 的全部 P，内部各 P 仍以 `Cxx_P01/Cxx_P02` 子项独立选择。这样可以同时选择多个合集 BV、其中某个 BV 的指定 P，以及普通同 BV 分 P；每个实际下载项仍按自身 BVID/CID 建立独立任务，不会把父项重复生成另一份文件。默认只勾选当前 BVID/CID 对应 P，列表提供全选、取消全选和逐项勾选。合集优先读取 `__INITIAL_STATE__.videoData.ugc_season.sections[].episodes[]`，真实播放页没有内嵌状态时再用播放器列表的顺序、标题和 CID 作为临时目录，纯 CID 不直接证明合集身份，最终仍须由官方 `view` 确认不同 BVID/AV。
-- 番剧页继续使用同一个右键菜单和下载工作台，不新增独立按钮或页面；番剧模式与普通视频的分 P/合集模式独立处理。正片列表来自官方 `pgc/view/web/season` 的 `result.episodes`，不会把幕后花絮或相关推荐加入列表；单季度显示 `E01/E02`，检测到页面正片区存在多个季度时按按钮顺序显示 `S01E01/S02E01`，并以 `S01/S02` 作为季度父项支持全选。每个季度单独读取自己的 `season_id`，目录请求最多并发 2 个；每集使用独立 `season_id + ep_id + BVID/AID + CID` 请求 `/pgc/player/web/playurl`。读取完轨道后，MP4 合并仍进入原有本地最多 4 个并发和内存容量预算。
-- 每个视频列表项按独立 BVID/AV、CID 和分 P 获取官方 `view/playurl` 数据，不复用其他视频的签名地址或轨道缓存；旧 DOM CID 与官方 `view.pages` 不一致时，以该 BV 自己的 page/CID 映射为准。文件使用对应的 `C01`、`C02_P02` 或 `P02` 标识和实际轨道信息，例如 `条目标题_BVxxxx_C02_P02_1080P_AVC_AAC_video_audio.mp4`；不处理推荐列表中与当前合集无关的视频。
-- 批量下载时每个 `BVID + P + CID` 都使用自己的播放接口响应，不会把合集中的多个 BV 或其分 P 合并成同一个任务；清晰度/编码优先匹配当前选择，无法匹配时按同清晰度其他编码、较低清晰度、最低可用清晰度依次降级，并在任务中提示。官方身份解析设有小并发闸门，防止全选大型合集时压垮接口；身份确认后，分轨任务立即交给下载管理器，不由脚本统一限流。合并任务独立排队，最多 4 个，并结合 CPU、设备内存、条目时长、轨道码率和清晰度动态调整并发，超长或高码率条目会自动降低并发。
-- B 站 `ugc_season` 的合集条目在不同页面版本中可能把 `pages` 返回为完整数组或数字；完整数组会展开为 `Cxx_Pyy`，数字只保留条目数量并等待该 BV 的官方 `view.pages` 补齐 CID，不会凭数量伪造下载项。
-- 下载工作台会在任务卡中显示估算文件大小、下载进度、转码进度和综合进度；全局摘要显示总下载速度、下载/保存/综合进度，以及预计下载、预计转码和预计总计时间。速度和进度默认约每 500 毫秒刷新，实际保存阶段只显示浏览器或下载管理器已报告的进度，不伪造磁盘写入速度。
-- “下载工作台”设置可以分别控制摘要、总速度、全局进度、预计时间、文件大小和任务阶段进度；还可以调整 250–2000 毫秒的刷新间隔，以及 3000–5000 毫秒的转码样本阈值。合并任务超过阈值后才记录一次转码性能样本，模型保留最近 3 条原始样本，旧样本只保留数值模型，不保存媒体地址、Cookie、CID 或签名参数。
-- 第三方来源：[Vanilagy/mediabunny v1.59.1](https://github.com/Vanilagy/mediabunny/tree/v1.59.1)，许可为 MPL-2.0，完整文本见 [third_party/mediabunny/LICENSE](third_party/mediabunny/LICENSE)。生成 Worker 保留来源和许可标记。
 
 ## 设置面板
 
@@ -128,16 +102,9 @@ CDN 优选可以进一步设置：
 - Edge 卡顿自适应：连续 `waiting` / `stalled` 或播放器错误时，在短期会话内切换到强制模式。
 - 国内镜像节点和境外镜像节点：可以选择预设、关闭改写或填写受信域名下的自定义主机名。
 
-下载工作台可以进一步设置：
-
-- 显示全局下载摘要、总下载速度、全局下载/保存/综合进度、预计文件大小和任务阶段进度。
-- 进度刷新间隔默认 500 毫秒，可调整为 250–2000 毫秒；刷新只更新界面和统计，不改变媒体请求并发。
-- 转码样本最短耗时默认 3000 毫秒，可调整为 3000–5000 毫秒。只有超过阈值的合并任务才会进入模型，模型保留最近 3 条样本并结合媒体字节量估算后续转码时间。
-- 保存阶段没有可观测的磁盘写入回调时显示“提交保存/已保存”状态，不伪造保存速度或精确磁盘进度。
-
 设置写入现有的 `bilikit:` 配置体系。修改开关或大多数参数后，按面板底部提示刷新页面生效；旧配置键会继续复用。
 
-“主题同步”也会作用于 BiliKit 自己的设置面板和播放器下载工作台：选择“跟随系统”时随系统主题变化，选择“始终深色”或“始终浅色”时覆盖系统主题。该设置不需要刷新即可同步到已打开的 BiliKit 界面。
+“主题同步”也会作用于 BiliKit 自己的设置面板：选择“跟随系统”时随系统主题变化，选择“始终深色”或“始终浅色”时覆盖系统主题。该设置不需要刷新即可同步到已打开的 BiliKit 界面。
 
 ## 安装与升级
 
@@ -147,9 +114,9 @@ CDN 优选可以进一步设置：
 
 本项目使用新的脚本名称和 namespace，是独立于旧版 BiliKit Core 的新脚本身份。旧版不会自动升级到本仓库；安装前请先停用旧版，避免两个脚本同时 hook 请求、重复修改页面或产生不稳定行为。
 
-脚本 metadata 仅匹配 Bilibili，并声明下载工作台实际需要的 Tampermonkey `GM_download`、`GM_xmlhttpRequest` 权限，以及 B 站实际返回的 `bilivideo.com` / `bilivideo.cn` / `bilivideo.net` 和签名 `edge.mountaintoys.cn` 媒体域名、收藏夹官方元数据域名 `api.bilibili.com` 和失效元数据恢复来源 `www.biliplus.com`、`www.jijidown.com`。收藏夹修复只在收藏夹页请求这些公开元数据；普通浏览、预览和打开下载工作台不会因此读取收藏夹内容。由于首页请求和播放地址处理需要尽早执行，脚本使用 `@run-at document-start` 和 `@sandbox raw`。
+脚本 metadata 仅匹配 Bilibili，并声明 Tampermonkey `GM_download`、`GM_xmlhttpRequest` 权限，以及 B 站实际返回的 `bilivideo.com` / `bilivideo.cn` / `bilivideo.net` 和签名 `edge.mountaintoys.cn` 媒体域名、收藏夹官方元数据域名 `api.bilibili.com` 和失效元数据恢复来源 `www.biliplus.com`、`www.jijidown.com`。收藏夹修复只在收藏夹页请求这些公开元数据；普通浏览和预览不会因此读取收藏夹内容。由于首页请求和播放地址处理需要尽早执行，脚本使用 `@run-at document-start` 和 `@sandbox raw`。
 
-本地开发源码位于 `src/userscript/`，运行 `npm run build` 生成单文件 `bilikit-performance.user.js`；Remux Worker 由构建命令嵌入发布脚本，开发时保留独立源码。修改下载列表或批量任务后，可运行 `npm run test:download-video-list`、`npm run test:download-mixed-batch` 和 `npm run test:download-lifecycle` 回归验证。
+本地开发源码位于 `src/userscript/`，运行 `npm run build` 生成单文件 `bilikit-performance.user.js`；Remux Worker 由构建命令嵌入发布脚本，开发时保留独立源码。
 
 仓库结构以 userscript 为唯一开发目标：`src/userscript/` 保存业务源码，`scripts/lib/primary-bundle.mjs` 负责生成根目录的单文件 userscript；`npm run build` 只更新 `bilikit-performance.user.js` 和 Remux Worker。Edge 扩展实现已从当前分支移除，旧实现仍可在历史提交 `fe39416` 中追溯，后续不再由本仓库构建或维护扩展目录、扩展 ZIP 和扩展桥接层。
 
@@ -167,7 +134,6 @@ window.__BILIKIT_HOME_AUTO_LOAD_STATS__
 window.__BILIKIT_HOME_AD_STATS__
 window.__BILIKIT_HOME_IMAGE_STATS__
 window.__BILIKIT_CDN_STATS__
-window.__BILIKIT_DOWNLOAD_STATS__
 window.__BILIKIT_FAVORITES_FIX_STATS__
 ```
 
@@ -183,7 +149,6 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 - `__BILIKIT_HOME_AD_STATS__`：首页广告楼层检测和隐藏数量。
 - `__BILIKIT_HOME_IMAGE_STATS__`：首页图片 CDN 节点、改写次数、回退和探测状态。
 - `__BILIKIT_CDN_STATS__`：播放 CDN 地域、节点来源、playurl 改写和 MCDN 直连提升情况。
-- `__BILIKIT_DOWNLOAD_STATS__`：当前页面捕获/拒绝计数、主动获取次数与成功/失败次数、获取来源、URL 中识别到的视频 ID、捕获的 BVID/CID、时长、实际命中的 playurl 端点、统一视频列表数量与选择数、合集批量状态、合并排队/运行数量、动态合并并发、内存预算、URL 切换次数及拒绝原因，不包含签名 URL。兼容字段包括 `collectionCount`、`collectionSelectedCount`、`collectionBatchActive`、`collectionBatchMode` 和 `lastCollectionError`；进度字段包括 `activeTaskCount`、`globalDownloadSpeedBytes`、`globalLoadedBytes`、`globalTotalBytes`、`globalDownloadProgress`、`globalRemuxProgress`、`globalSaveProgress`、`globalOverallProgress`、`downloadEtaMs`、`remuxEtaMs`、`totalEtaMs`、`remuxModelReady`、`remuxSampleCount` 和 `lastRemuxSampleMs`。工作台全局摘要只显示总下载速度、按任务媒体大小加权的综合进度、预计下载和预计总计；预计转码不再单独显示。
 - `__BILIKIT_FAVORITES_FIX_STATS__`：收藏夹官方接口来源、外部元数据请求/命中/未命中次数、最近命中来源、卡片/接口条目数、恢复条目数、更新条目数、缓存条目数、标题/封面恢复数、未解决数、悬停面板数和最近错误；不记录 Cookie 或媒体地址。
 
 这些接口只用于诊断，不会输出 Cookie、access key 或其他认证信息。排查首页慢或缺卡时，应同时确认脚本版本和 B 站自身接口状态，不能只根据浏览器扩展报错归因于本脚本。
@@ -194,8 +159,6 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 - 地域未确认时不会强制换节点。节点切换只影响后续请求和未完成资源，不会批量刷新已经显示的图片。
 - 首页自动加载只在未检测到 BiliKit Feed 时运行；它通过原生首页滚动加载机制触发，不直接请求首页接口、不克隆卡片，也不会修改 Feed 脚本。
 - 首页自动加载是有限的启发式触发：页面结构变化、原生接口未响应或浏览器阻止滚动探测时，可能只完成部分加载或跳过本轮。
-- 下载工作台只处理当前 URL 对应视频列表中的 BVID/AV + CID 项；合集条目和其内部 P 可以同时选择，每个项单独获取 DASH 轨道，不处理不同 BV 的推荐列表，不绕过登录、付费、DRM 或其他访问限制。DASH 不可用、签名地址过期、官方接口拒绝、管理器权限被拒或编码无法直通封装时，会显示失败或保留可用的分轨选项。
-- 合并 MP4 会在内存中暂存音视频轨并生成输出；长视频/高码率可能占用较多内存，可改用分轨下载。任务与签名地址不跨页面保存。
 - 免登录模式是只读能力：页面可以显示部分公开内容，但发表评论、点赞、投币、收藏、历史同步等需要真实鉴权的操作失败属于预期行为。免登录评论也拿不到服务端只对真实登录返回的 IP 属地字段。
 - 官方试看限制仍由 B 站控制，免登录模式不提供 4K、HDR 或大会员专享清晰度。
 - 主题和评论信息模块只增强现有页面数据，不额外请求评论性别或属地接口；保密用户可能不显示性别。
@@ -225,10 +188,7 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 ```bash
 python3 /Users/chenhong/.codex/skills/tampermonkey-build/scripts/validate_userscript.py bilikit-performance.user.js
 node --check bilikit-performance.user.js
-node scripts/test-download-file-extension.mjs
-node scripts/test-download-filename.mjs
-node scripts/test-download-mixed-batch.mjs
-node scripts/test-download-save.mjs
+for f in scripts/test-*.mjs; do node "$f"; done
 ```
 
 静态检查通过不等于真实 Edge 回归完成。首页刷新、搜索结果、悬停预览、播放页、MCDN、布局稳定和第三方浏览器扩展联动应在目标浏览器中分别验证。
@@ -236,5 +196,7 @@ node scripts/test-download-save.mjs
 ## 许可证
 
 [MIT License](LICENSE)。脚本作者和上游信息以 userscript metadata 与许可证文件为准。
+
+内嵌的第三方组件：[Vanilagy/mediabunny v1.59.1](https://github.com/Vanilagy/mediabunny/tree/v1.59.1)，许可为 MPL-2.0，完整文本见 [third_party/mediabunny/LICENSE](third_party/mediabunny/LICENSE)。生成 Worker 保留来源和许可标记。
 
 收藏夹修复功能参考了 [crnkv/bilibili-favorites-fix-cerenkov-mod](https://github.com/crnkv/bilibili-favorites-fix-cerenkov-mod) 所公开展示的功能需求和 B 站页面结构。该仓库及其上游使用 GPL-3.0；BiliKit 没有复制其源码、jQuery 依赖、资源文件或缓存实现，收藏夹模块是保持 MIT 许可的独立实现。失效元数据恢复只读取 [BiliPlus aidinfo](https://www.biliplus.com/api/aidinfo) 和 [Jijidown get_info](https://www.jijidown.com/api/v1/video/get_info) 的公开返回值，不捆绑或再分发这些站点的代码；来源不可用时不伪造标题和封面。

@@ -83,10 +83,54 @@
       display: flex;
       flex-wrap: wrap;
       justify-content: center;
+      align-items: flex-start;
       gap: 12px;
       margin-top: 40px;
     }
     .cover-actions .btn { justify-content: center; min-width: 132px; }
+    /* 首屏安装按钮跳到教程，下方小字直接安装；悬浮时提示跳转 */
+    .install-group {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .install-group .direct {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+    .install-group .direct:hover { color: var(--pink-ink); }
+    .install-group .tip {
+      position: absolute;
+      bottom: calc(100% + 10px);
+      left: 50%;
+      transform: translate(-50%, 4px);
+      padding: 6px 12px;
+      border-radius: 8px;
+      background: var(--fg);
+      color: var(--bg);
+      font-size: 13px;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .15s ease, transform .15s ease;
+    }
+    .install-group .tip::after {
+      content: "";
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      margin-left: -5px;
+      border: 5px solid transparent;
+      border-top-color: var(--fg);
+    }
+    .install-group .btn:hover ~ .tip,
+    .install-group .btn:focus-visible ~ .tip { opacity: 1; transform: translate(-50%, 0); }
+    @media (hover: none) {
+      .install-group .btn:hover ~ .tip { opacity: 0; }
+    }
     .scroll-hint {
       position: absolute;
       bottom: 32px;
@@ -377,6 +421,7 @@
       .cover-actions {
         flex-direction: column;
         flex-wrap: nowrap;
+        align-items: stretch;
         width: 100%;
         max-width: 360px;
         margin-top: 24px;
@@ -415,10 +460,14 @@
       <p class="author">开发者 <a href="https://github.com/ct-yx">ct-yx</a></p>
     </div>
     <nav class="cover-actions" aria-label="快捷操作">
-      <a class="btn" href="https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
-        安装脚本
-      </a>
+      <div class="install-group">
+        <a class="btn" href="#install" aria-describedby="install-tip">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+          安装脚本
+        </a>
+        <span class="tip" role="tooltip" id="install-tip">快速跳转到安装教程</span>
+        <a class="direct" href="https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js">直接安装脚本</a>
+      </div>
       <a class="btn ghost" href="https://github.com/ct-yx/BiliKit-Performance">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.58 9.58 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>
         进入仓库

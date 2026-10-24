@@ -2,7 +2,7 @@
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
 // @version      0.6.49
-// @author       shiinayane
+// @author       ct-yx
 // @description  B 站首页性能与 CDN 优化，提供统一视频列表下载工作台，支持合集视频及条目分 P、收藏夹修复和 MP4 音视频封装。
 // @license      MIT
 // @homepage     https://github.com/ct-yx/BiliKit-Performance
@@ -3516,7 +3516,7 @@ var BiliKitDownloadProgressModule = (() => {
   }
   function renderAboutDetail(d) {
     d.appendChild(el("div", "detail-title", "关于 BiliKit Performance"));
-    d.appendChild(el("div", "detail-desc", "面向 B 站首页、搜索与播放场景的 Edge / Chromium 性能优化脚本 · 作者 shiinayane · MIT"));
+    d.appendChild(el("div", "detail-desc", "面向 B 站首页、搜索与播放场景的 Edge / Chromium 性能优化脚本 · 作者 ct-yx · MIT"));
     const fields = el("div", "fields");
     const vrow = el("div", "field row");
     vrow.appendChild(el("span", "flabel", "版本"));

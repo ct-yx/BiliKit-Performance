@@ -2893,7 +2893,7 @@
   }
   function renderAboutDetail(d) {
     d.appendChild(el("div", "detail-title", "关于 BiliKit Performance"));
-    d.appendChild(el("div", "detail-desc", "面向 B 站首页、搜索与播放场景的 Edge / Chromium 性能优化脚本 · 作者 shiinayane · MIT"));
+    d.appendChild(el("div", "detail-desc", "面向 B 站首页、搜索与播放场景的 Edge / Chromium 性能优化脚本 · 作者 ct-yx · MIT"));
     const fields = el("div", "fields");
     const vrow = el("div", "field row");
     vrow.appendChild(el("span", "flabel", "版本"));

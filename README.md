@@ -10,6 +10,8 @@
 
 详细功能介绍：[docs/FEATURES.md](docs/FEATURES.md)
 
+交接文档：[HANDOFF.md](HANDOFF.md)
+
 ## 功能概览
 
 ### 首页信息流

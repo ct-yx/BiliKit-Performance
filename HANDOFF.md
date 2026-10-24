@@ -8,7 +8,7 @@ BiliKit Performance 是运行在 Edge/Chromium 浏览器中的 Bilibili userscri
 
 - 仓库：<https://github.com/ct-yx/BiliKit-Performance>
 - 默认分支：`main`
-- 当前版本：`0.6.49`
+- 当前版本：`0.7.0`
 - 发布入口：`bilikit-performance.user.js`
 - 原始安装地址：<https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js>
 - 本文档创建前的基线提交：`32036b15c0ef9efbde6fdb9c65ea869b640fdfe4`

@@ -2792,7 +2792,7 @@
     const onHome = location.pathname === "/" || location.pathname === "/index.html";
     const feedAlive = Number(localStorage.getItem("bilikit:alive.feed") || 0);
     if (onHome && Date.now() - feedAlive > 8e3) {
-      d.appendChild(callout('未检测到 <b>BiliKit Feed</b>，首页推荐流需要它。<a href="https://github.com/shiinayane/BiliKit" target="_blank" rel="noopener">前往安装</a>', "warn"));
+      d.appendChild(callout('未检测到 <b>BiliKit Feed</b>，首页推荐流需要它。<a href="https://github.com/shiinayane/BiliKit-Web" target="_blank" rel="noopener">前往安装</a>', "warn"));
     }
     const fields = el("div", "fields");
     const row = el("div", "field row");
@@ -3781,7 +3781,7 @@
         label: "CDN 镜像节点",
         default: "upos-sz-mirrorhw.bilivideo.com",
         options: [
-          { label: "华为 hw（当前实测较快）", value: "upos-sz-mirrorhw.bilivideo.com" },
+          { label: "华为 hw（默认）", value: "upos-sz-mirrorhw.bilivideo.com" },
           { label: "百度 bda2", value: "upos-sz-upcdnbda2.bilivideo.com" },
           { label: "阿里 ali", value: "upos-sz-mirrorali.bilivideo.com" },
           { label: "阿里 ali02", value: "upos-sz-mirrorali02.bilivideo.com" },
@@ -4301,7 +4301,7 @@
   const wakeLock = {
     id: "wake-lock",
     name: "防睡眠",
-    description: "播放视频时阻止 Safari 休眠 / 屏保",
+    description: "播放视频时阻止屏幕休眠 / 屏保",
     category: "播放",
     runAt: "idle",
     init: init$2

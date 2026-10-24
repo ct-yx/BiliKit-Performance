@@ -243,31 +243,23 @@
     /* 安装 */
     .install { padding: 96px 0; text-align: center; }
     .install h2 { font-size: clamp(26px, 4vw, 34px); margin: 0 0 32px; }
-    .install-media {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 24px;
-      margin: 0 auto 48px;
-    }
-    @media (max-width: 760px), (orientation: portrait) {
-      .install-media { grid-template-columns: 1fr; }
-    }
     .install ol {
       list-style: none;
       counter-reset: step;
       padding: 0;
-      margin: 0 auto 36px;
-      max-width: 520px;
+      margin: 0 auto 32px;
+      max-width: 720px;
       text-align: left;
     }
-    .install li {
-      counter-increment: step;
-      display: flex;
-      gap: 14px;
-      align-items: baseline;
-      margin-bottom: 16px;
+    .install li { counter-increment: step; margin-bottom: 40px; }
+    .install li:last-child { margin-bottom: 0; }
+    .step-head { display: flex; gap: 14px; align-items: baseline; font-size: 17px; }
+    .step-body { margin: 16px 0 0 40px; }
+    .step-body .btn { margin-bottom: 20px; }
+    @media (max-width: 760px), (orientation: portrait) {
+      .step-body { margin-left: 0; }
     }
-    .install li::before {
+    .step-head::before {
       content: counter(step);
       flex: none;
       width: 26px;
@@ -315,6 +307,65 @@
     }
     .btn.ghost:hover { border-color: var(--muted); background: var(--card); box-shadow: none; }
     .btn.ghost .heart { color: var(--pink-ink); }
+    button.btn { font-family: inherit; cursor: pointer; }
+
+    /* 赞助弹窗 */
+    .sponsor {
+      position: fixed;
+      width: min(360px, calc(100vw - 48px));
+      padding: 28px 24px 24px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--bg);
+      color: var(--fg);
+      text-align: center;
+      box-shadow: 0 24px 64px -24px rgba(0, 0, 0, .35);
+    }
+    .sponsor::backdrop { background: rgba(0, 0, 0, .35); }
+    .sponsor h2 { font-size: 20px; margin: 0 0 6px; }
+    .sponsor p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+    .sponsor-links { display: grid; gap: 12px; }
+    .sponsor-links .btn { justify-content: center; }
+    .sponsor-close {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 32px;
+      height: 32px;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .sponsor-close:hover { background: var(--card); color: var(--fg); }
+
+    /* 演示录屏的点击暂停：暂停时在中央显示播放图标 */
+    .player { position: relative; }
+    .player video { cursor: pointer; }
+    .player video:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+    .play-badge {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 64px;
+      height: 64px;
+      margin: -32px 0 0 -32px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, .55);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transform: scale(.85);
+      transition: opacity .2s ease, transform .2s ease;
+      pointer-events: none;
+    }
+    .play-badge svg { width: 28px; height: 28px; margin-left: 3px; }
+    .player.is-paused .play-badge { opacity: 1; transform: scale(1); }
     @media (prefers-reduced-motion: reduce) {
       .btn, .btn:hover { transition: none; transform: none; }
     }
@@ -372,12 +423,20 @@
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02a9.58 9.58 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg>
         进入仓库
       </a>
-      <!-- TODO: 赞助链接待补充 -->
-      <a class="btn ghost" href="#" data-todo="sponsor">
+      <button class="btn ghost" type="button" id="sponsor-open" aria-haspopup="dialog">
         <svg class="heart" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 3 4.5 6.8 4.5c2.1 0 3.6 1.2 5.2 3 1.6-1.8 3.1-3 5.2-3 3.8 0 5.9 3.9 4.4 7.3C19.5 16.4 12 21 12 21Z"/></svg>
         赞助
-      </a>
+      </button>
     </nav>
+    <dialog class="sponsor" id="sponsor" aria-labelledby="sponsor-title">
+      <h2 id="sponsor-title">赞助 BiliKit</h2>
+      <p>选择一个平台支持开发者。</p>
+      <div class="sponsor-links">
+        <a class="btn" href="https://ifdian.net/a/Ct_yx" target="_blank" rel="noopener">爱发电</a>
+        <a class="btn ghost" href="https://buymeacoffee.com/ctyx" target="_blank" rel="noopener">Buy Me a Coffee</a>
+      </div>
+      <form method="dialog"><button class="sponsor-close" aria-label="关闭" autofocus>×</button></form>
+    </dialog>
     <a class="scroll-hint" href="#features">
       了解功能
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -503,22 +562,26 @@
 
     <section class="install" id="install" aria-labelledby="install-title">
       <h2 id="install-title">安装</h2>
-      <div class="install-media">
-        <figure class="shot">
-          <video data-src="assets/install-tampermonkey.mp4" poster="assets/install-tampermonkey.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="从 Edge 加载项商店安装 Tampermonkey 的演示"></video>
-          <figcaption>第 1 步：安装 Tampermonkey</figcaption>
-        </figure>
-        <figure class="shot">
-          <video data-src="assets/install-script.mp4" poster="assets/install-script.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="点击安装按钮并在 Tampermonkey 中确认安装脚本的演示"></video>
-          <figcaption>第 2 步：安装脚本</figcaption>
-        </figure>
-      </div>
       <ol>
-        <li><span>安装 <a href="https://www.tampermonkey.net/">Tampermonkey</a> 或其他兼容的 userscript 管理器。</span></li>
-        <li><span>点击下方按钮，在管理器中确认安装。</span></li>
-        <li><span>打开 Bilibili，确认脚本名称为 <code>BiliKit Performance (Edge/Chromium)</code>。</span></li>
+        <li>
+          <div class="step-head"><span>安装 <a href="https://www.tampermonkey.net/">Tampermonkey</a> 或其他兼容的 userscript 管理器。</span></div>
+          <figure class="shot step-body">
+            <video data-src="assets/install-tampermonkey.mp4" poster="assets/install-tampermonkey.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="从 Edge 加载项商店安装 Tampermonkey 的演示"></video>
+          </figure>
+        </li>
+        <li>
+          <div class="step-head"><span>点击下方按钮，在管理器中确认安装。</span></div>
+          <div class="step-body">
+            <a class="btn" href="https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js">安装脚本</a>
+            <figure class="shot">
+              <video data-src="assets/install-script.mp4" poster="assets/install-script.jpg" muted loop playsinline preload="none" width="960" height="588" aria-label="点击安装按钮并在 Tampermonkey 中确认安装脚本的演示"></video>
+            </figure>
+          </div>
+        </li>
+        <li>
+          <div class="step-head"><span>打开 <a href="https://www.bilibili.com/">Bilibili 首页</a>，右下角出现 BiliKit 齿轮按钮，说明脚本已经生效。</span></div>
+        </li>
       </ol>
-      <a class="btn" href="https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js">安装脚本</a>
       <p class="note">如果装过旧版 BiliKit Core，请先停用它，避免两个脚本同时修改页面。</p>
     </section>
   </main>
@@ -527,6 +590,7 @@
     <a href="https://github.com/ct-yx/BiliKit-Performance">GitHub</a>
     · <a href="https://github.com/ct-yx/BiliKit-Performance/blob/main/LICENSE">MIT License</a>
     · 合并功能使用 <a href="https://github.com/Vanilagy/mediabunny">Mediabunny</a>（MPL-2.0）
+    <br>赞助：<a href="https://ifdian.net/a/Ct_yx">爱发电</a> · <a href="https://buymeacoffee.com/ctyx">Buy Me a Coffee</a>
   </footer>
   <script>
     // 演示录屏：进入视口时才加载并播放，离开时暂停；减少动态效果时改为手动播放
@@ -544,9 +608,41 @@
         });
         return;
       }
+      // 点击（或聚焦后按空格/回车）切换暂停；用户手动暂停的视频滚动回视口时不会自动恢复
+      const userPaused = new WeakSet();
+      const toggle = (v) => {
+        if (v.paused) {
+          userPaused.delete(v);
+          load(v);
+          v.play().catch(() => { v.controls = true; });
+        } else {
+          userPaused.add(v);
+          v.pause();
+        }
+      };
+      videos.forEach((v) => {
+        const wrap = document.createElement("div");
+        wrap.className = "player";
+        v.before(wrap);
+        wrap.append(v);
+        wrap.insertAdjacentHTML("beforeend", '<span class="play-badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z"/></svg></span>');
+        v.tabIndex = 0;
+        v.title = "点击暂停 / 播放";
+        v.addEventListener("click", () => toggle(v));
+        v.addEventListener("keydown", (e) => {
+          if (e.key === " " || e.key === "Enter") {
+            e.preventDefault();
+            toggle(v);
+          }
+        });
+        v.addEventListener("play", () => wrap.classList.remove("is-paused"));
+        v.addEventListener("pause", () => wrap.classList.toggle("is-paused", userPaused.has(v)));
+      });
+
       const io = new IntersectionObserver((entries) => {
         entries.forEach(({ target: v, isIntersecting }) => {
           if (isIntersecting) {
+            if (userPaused.has(v)) return;
             load(v);
             v.play().catch(() => { v.controls = true; });
           } else {
@@ -555,6 +651,17 @@
         });
       }, { rootMargin: "200px 0px", threshold: 0.15 });
       videos.forEach((v) => io.observe(v));
+    })();
+
+    // 赞助弹窗：点击遮罩也可关闭
+    (() => {
+      const dialog = document.getElementById("sponsor");
+      const open = document.getElementById("sponsor-open");
+      if (!dialog || !open || typeof dialog.showModal !== "function") return;
+      open.addEventListener("click", () => dialog.showModal());
+      dialog.addEventListener("click", (e) => {
+        if (e.target === dialog) dialog.close();
+      });
     })();
 
     // CDN 测速示意动画：节点取自脚本设置中的国内镜像选项，延迟为随机模拟值

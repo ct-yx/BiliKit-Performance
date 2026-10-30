@@ -441,6 +441,44 @@
 
     .install .note { color: var(--muted); font-size: 14px; margin: 20px 0 0; }
 
+    /* 常见问题 */
+    .qa { padding: 16px 0 96px; }
+    .qa h2 { font-size: clamp(26px, 4vw, 34px); margin: 0 0 12px; text-align: center; }
+    .qa-lead { max-width: 600px; margin: 0 auto 32px; color: var(--muted); text-align: center; }
+    .qa-list { max-width: 720px; margin: 0 auto; border-top: 1px solid var(--line); }
+    .qa details { border-bottom: 1px solid var(--line); }
+    .qa summary {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 16px 0;
+      cursor: pointer;
+      font-weight: 600;
+      list-style: none;
+    }
+    .qa summary::-webkit-details-marker { display: none; }
+    .qa summary::after {
+      content: "+";
+      flex: none;
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 20px;
+      font-weight: 400;
+      line-height: 1;
+    }
+    .qa details[open] summary::after { content: "−"; }
+    .qa summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; border-radius: 6px; }
+    .qa-answer { padding: 0 48px 20px 0; color: var(--muted); }
+    .qa-answer p { margin: 0; }
+
     footer {
       padding: 32px 0 48px;
       border-top: 1px solid var(--line);
@@ -633,10 +671,40 @@
       </ol>
       <p class="note">如果装过旧版 BiliKit Core，请先停用它，避免两个脚本同时修改页面。</p>
     </section>
+
+    <section class="qa" id="qa" aria-labelledby="qa-title">
+      <h2 id="qa-title">常见问题</h2>
+      <p class="qa-lead">第一次安装或遇到页面行为变化时，可以先从这里开始排查。</p>
+      <div class="qa-list">
+        <details>
+          <summary>支持哪些浏览器和脚本管理器？</summary>
+          <div class="qa-answer"><p>项目面向 Edge、Chrome 等 Chromium 浏览器，使用 Tampermonkey 或其他兼容的 userscript 管理器。不同浏览器对下载权限、媒体播放和页面策略的处理可能不同。</p></div>
+        </details>
+        <details>
+          <summary>为什么要停用旧版 BiliKit Core？</summary>
+          <div class="qa-answer"><p>旧版和当前脚本可能同时 hook 网络请求或重复修改页面。安装 BiliKit Performance 前先停用旧版，可以避免重复处理和难以判断来源的页面异常。</p></div>
+        </details>
+        <details>
+          <summary>下载工作台里的 MP4 和仅音频有什么区别？</summary>
+          <div class="qa-answer"><p>MP4 会把视频轨和音频轨合并为一个文件，尽量使用直通封装，不重新编码；仅音频会导出带元数据的 M4A 文件。两种方式都需要浏览器允许脚本保存下载文件。</p></div>
+        </details>
+        <details>
+          <summary>CDN 优选会修改视频内容或账号数据吗？</summary>
+          <div class="qa-answer"><p>CDN 优选只处理符合条件的图片和播放资源地址，并保留失败回退路径。它不修改视频内容、清晰度选择、账号信息或 Bilibili 的登录状态。</p></div>
+        </details>
+        <details>
+          <summary>安装后功能没有出现，应该怎么排查？</summary>
+          <div class="qa-answer"><p>先确认脚本已启用、版本为 0.7.0，并刷新 Bilibili 首页；再检查是否仍启用了旧版 BiliKit Core 或其他会改写播放器和请求的脚本。设置入口只在首页右下角显示。</p></div>
+        </details>
+      </div>
+    </section>
   </main>
 
   <footer>
-    <a href="https://github.com/ct-yx/BiliKit-Performance">GitHub</a>
+    <a href="./">项目主页</a>
+    · <a href="changelog.html">更新日志</a>
+    · <a href="#qa">常见问题</a>
+    · <a href="https://github.com/ct-yx/BiliKit-Performance">GitHub</a>
     · <a href="https://github.com/ct-yx/BiliKit-Performance/blob/main/LICENSE">MIT License</a>
     · 合并功能使用 <a href="https://github.com/Vanilagy/mediabunny">Mediabunny</a>（MPL-2.0）
     <br>赞助：<a href="https://ifdian.net/a/Ct_yx">爱发电</a> · <a href="https://buymeacoffee.com/ctyx">Buy Me a Coffee</a>

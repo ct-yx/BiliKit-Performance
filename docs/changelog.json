@@ -1,0 +1,26 @@
+{
+  "repository": "ct-yx/BiliKit-Performance",
+  "releases": [
+    {
+      "tagName": "v0.7.0",
+      "name": "BiliKit Performance 0.7.0",
+      "publishedAt": "2026-10-24T10:54:12Z",
+      "htmlUrl": "https://github.com/ct-yx/BiliKit-Performance/releases/tag/v0.7.0",
+      "body": "## 更新内容\n\n- 移除过时信息：脚本作者（元数据 `@author` 和设置页「关于」）更新为 ct-yx。\n- 设置页其他过时信息：\n  - 「防睡眠」说明不再写 Safari，改为通用的屏幕休眠描述。\n  - CDN 默认节点「华为 hw」去掉「当前实测较快」的时效性说法，改为标注「默认」。\n  - 「App 推荐 Feed」的安装链接更新为 BiliKit Feed 当前仓库地址。\n- 新增 GitHub Pages 介绍页：https://ct-yx.github.io/BiliKit-Performance/\n\n## 验证\n\n- 构建、重复构建一致性、Node 语法检查、userscript validator 和全部 20 个自动化测试均通过。\n- validator 仅提示 GM_download 为高影响权限，这是下载功能所需权限。\n- 未在真实浏览器中安装回归。\n\n安装或更新请使用仓库 Raw 地址：https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js\n"
+    },
+    {
+      "tagName": "v0.6.43",
+      "name": "BiliKit Performance 0.6.43",
+      "publishedAt": "2026-09-30T13:43:28Z",
+      "htmlUrl": "https://github.com/ct-yx/BiliKit-Performance/releases/tag/v0.6.43",
+      "body": "## 更新内容\n\n- 发布统一视频列表下载工作台，支持同一合集中的多个 BV 视频及其各自分 P 同时选择下载。\n- 加入可复现的模块源码构建、内嵌 Remux Worker 和下载列表/批量任务回归测试。\n- 完善下载进度与预计时间、任务保留、收藏夹失效卡片资料恢复等功能。\n\n## 验证\n\n- 构建、重复构建一致性、Node 语法、userscript validator、下载/合集/生命周期/收藏夹相关自动化测试均通过。\n- validator 仅提示 GM_download 是高影响下载权限；这是下载功能所需权限。\n- 未在 Tampermonkey 安装或覆盖脚本；当前内置浏览器没有检测到该脚本运行标记，因此真实浏览器下载回归未验证。\n\n安装或更新请使用仓库 Raw 地址：https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js"
+    },
+    {
+      "tagName": "v0.6.2",
+      "name": "BiliKit Performance 0.6.2",
+      "publishedAt": "2026-09-23T19:02:25Z",
+      "htmlUrl": "https://github.com/ct-yx/BiliKit-Performance/releases/tag/v0.6.2",
+      "body": "## 更新内容\n\n- 优化首页信息流封面预加载优先级，减少预加载对首屏请求的竞争。\n- 保留首页信息流续载、布局稳定和 CDN 节点选择修复。\n- 同步设置面板内部版本显示为 0.6.2。\n- 设置面板使用深色原生控件配色，改善滚动条显示。\n\n## 安装\n\n- [安装 / 更新 userscript](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)\n- 旧版 BiliKit Core 不会自动升级，请停用旧版后再安装本脚本。"
+    }
+  ]
+}

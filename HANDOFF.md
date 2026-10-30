@@ -114,6 +114,14 @@ npm run build
 
 发布前只把构建生成的根目录 userscript 作为安装文件；不要从单独的源码片段安装，也不要把扩展目录或 ZIP 当作当前项目产物。
 
+GitHub Release 发布后，`.github/workflows/sync-release-changelog.yml` 会自动读取正式版 Release，生成 `docs/changelog.json` 并提交到 `main`，供 Pages 更新日志页面读取。需要本地手动同步时运行：
+
+```
+npm run sync:changelog
+```
+
+`docs/changelog.json` 是生成文件，不要手工编辑；更新日志内容应写入对应的 GitHub Release 正文。
+
 版本更新时至少同步检查：
 
 ```

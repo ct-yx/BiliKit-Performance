@@ -8,6 +8,10 @@
 
 仓库：[ct-yx/BiliKit-Performance](https://github.com/ct-yx/BiliKit-Performance)
 
+项目主页：[GitHub Pages](https://ct-yx.github.io/BiliKit-Performance/)
+
+更新日志：[GitHub Pages 更新日志](https://ct-yx.github.io/BiliKit-Performance/changelog.html)
+
 详细功能介绍：[docs/FEATURES.md](docs/FEATURES.md)
 
 交接文档：[HANDOFF.md](HANDOFF.md)

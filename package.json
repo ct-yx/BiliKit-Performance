@@ -7,6 +7,7 @@
     "build": "npm run build:remux-worker && npm run build:userscript",
     "build:userscript": "node scripts/build-userscript.mjs",
     "build:remux-worker": "node scripts/build-remux-worker.mjs",
+    "sync:changelog": "node scripts/sync-release-log.mjs",
     "test:download-identity": "node scripts/test-download-identity.mjs",
     "test:download-active-fetch": "node scripts/test-download-active-fetch.mjs",
     "test:download-file-extension": "node scripts/test-download-file-extension.mjs",

@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>更新日志 · BiliKit Performance</title>
+  <meta name="description" content="BiliKit Performance 的版本与项目维护记录。">
+  <meta name="color-scheme" content="light dark">
+  <style>
+    :root {
+      --bg: #fafafa;
+      --fg: #18191c;
+      --muted: #61666d;
+      --line: #e3e5e7;
+      --card: #ffffff;
+      --pink-ink: #c6305a;
+      --blue: #00aeec;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111214;
+        --fg: #e7e8ea;
+        --muted: #9499a0;
+        --line: #2a2c30;
+        --card: #18191c;
+        --pink-ink: #ff8fb0;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--pink-ink); text-underline-offset: 3px; }
+    a:focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: 3px;
+      border-radius: 8px;
+    }
+    .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+    .hero {
+      padding: 72px 24px 48px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--pink-ink);
+      font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 720px;
+      margin: 0 0 14px;
+      font-size: clamp(36px, 7vw, 64px);
+      line-height: 1.1;
+      letter-spacing: -.03em;
+    }
+    .lede { max-width: 600px; margin: 0; color: var(--muted); }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 22px;
+      border-radius: 999px;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      text-decoration: none;
+      background: linear-gradient(135deg, #d63d6e, #c2325f);
+      color: #fff;
+      box-shadow: 0 6px 18px -6px rgba(214, 61, 110, .55);
+      transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease, background-color .15s ease;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 10px 24px -8px rgba(214, 61, 110, .6); }
+    .btn:active { transform: translateY(0); }
+    .btn.ghost {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--line);
+      box-shadow: none;
+    }
+    .btn.ghost:hover { border-color: var(--muted); background: var(--card); box-shadow: none; }
+    .log { padding: 24px 0 96px; }
+    .release {
+      padding: 42px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .release:last-child { border-bottom: 0; }
+    .release-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 18px;
+    }
+    .release h2 { margin: 0; font-size: clamp(24px, 4vw, 32px); }
+    .release time { color: var(--muted); font-size: 14px; white-space: nowrap; }
+    .release-label {
+      display: inline-block;
+      margin-bottom: 8px;
+      color: var(--pink-ink);
+      font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .release-name { margin: 6px 0 0; color: var(--muted); font-size: 15px; }
+    .release-link { display: inline-block; margin-top: 20px; font-size: 14px; }
+    .release-body { max-width: 760px; color: var(--muted); }
+    .release-body h3,
+    .release-body h4 { color: var(--fg); }
+    .release-body h3 { margin: 24px 0 8px; font-size: 19px; }
+    .release-body h4 { margin: 20px 0 6px; font-size: 17px; }
+    .release-body h3:first-child,
+    .release-body h4:first-child { margin-top: 0; }
+    .release-body p { margin: 0 0 14px; }
+    .release-body ul { margin: 0 0 16px; padding-left: 20px; }
+    .release-body li + li { margin-top: 6px; }
+    .release-body code {
+      padding: 1px 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--card);
+      color: var(--fg);
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .release-status {
+      padding: 48px 0;
+      color: var(--muted);
+      text-align: center;
+    }
+    .release-status.error { color: var(--pink-ink); }
+    footer {
+      padding: 32px 24px 48px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+    }
+    footer a { color: var(--muted); }
+    @media (max-width: 640px) {
+      .hero { padding-top: 52px; }
+      .release-head { display: block; }
+      .release time { display: block; margin-top: 6px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .btn, .btn:hover { transition: none; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <p class="eyebrow">Project log</p>
+      <h1>更新日志</h1>
+      <p class="lede">记录 BiliKit Performance 的正式 GitHub Release。当前版本：<strong id="current-version">加载中</strong>。</p>
+      <nav class="actions" aria-label="页面操作">
+        <a class="btn" href="./">返回项目主页</a>
+        <a class="btn ghost" href="https://github.com/ct-yx/BiliKit-Performance">查看仓库</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap log">
+    <div id="release-list" aria-live="polite">
+      <p class="release-status">正在加载发布日志…</p>
+    </div>
+  </main>
+
+  <footer>
+    <a href="./">项目主页</a>
+    · <a href="https://github.com/ct-yx/BiliKit-Performance">GitHub</a>
+    · <a href="https://github.com/ct-yx/BiliKit-Performance/blob/main/LICENSE">MIT License</a>
+    · 合并功能使用 <a href="https://github.com/Vanilagy/mediabunny">Mediabunny</a>（MPL-2.0）
+  </footer>
+  <script>
+    (() => {
+      const currentVersion = document.querySelector("#current-version");
+      const releaseList = document.querySelector("#release-list");
+      const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+
+      const appendInline = (parent, value) => {
+        const pattern = /`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/g;
+        let cursor = 0;
+        let match;
+        while ((match = pattern.exec(value))) {
+          if (match.index > cursor) parent.append(document.createTextNode(value.slice(cursor, match.index)));
+          if (match[1]) {
+            const code = document.createElement("code");
+            code.textContent = match[1];
+            parent.append(code);
+          } else {
+            const link = document.createElement("a");
+            link.href = match[3] || match[4];
+            link.target = "_blank";
+            link.rel = "noopener";
+            link.textContent = match[2] || match[4];
+            parent.append(link);
+          }
+          cursor = pattern.lastIndex;
+        }
+        if (cursor < value.length) parent.append(document.createTextNode(value.slice(cursor)));
+      };
+
+      const renderBody = (body) => {
+        const fragment = document.createDocumentFragment();
+        let list = null;
+        let paragraph = [];
+
+        const flushParagraph = () => {
+          if (!paragraph.length) return;
+          const element = document.createElement("p");
+          appendInline(element, paragraph.join(" "));
+          fragment.append(element);
+          paragraph = [];
+        };
+
+        for (const rawLine of String(body || "").split(/\r?\n/)) {
+          const line = rawLine.trimEnd();
+          if (!line.trim()) {
+            flushParagraph();
+            list = null;
+            continue;
+          }
+
+          const heading = line.match(/^(#{2,6})\s+(.+)$/);
+          if (heading) {
+            flushParagraph();
+            list = null;
+            const element = document.createElement(heading[1].length === 2 ? "h3" : "h4");
+            appendInline(element, heading[2]);
+            fragment.append(element);
+            continue;
+          }
+
+          const item = line.match(/^\s*[-*]\s+(.+)$/);
+          if (item) {
+            flushParagraph();
+            if (!list) {
+              list = document.createElement("ul");
+              fragment.append(list);
+            }
+            const element = document.createElement("li");
+            appendInline(element, item[1]);
+            list.append(element);
+            continue;
+          }
+
+          list = null;
+          paragraph.push(line.trim());
+        }
+        flushParagraph();
+        return fragment;
+      };
+
+      const renderRelease = (release, index) => {
+        const article = document.createElement("article");
+        article.className = "release";
+        article.setAttribute("aria-labelledby", `release-${index}`);
+
+        const head = document.createElement("div");
+        head.className = "release-head";
+        const title = document.createElement("div");
+        const label = document.createElement("span");
+        label.className = "release-label";
+        label.textContent = index === 0 ? "Latest release" : "Release";
+        const heading = document.createElement("h2");
+        heading.id = `release-${index}`;
+        heading.textContent = release.tagName;
+        title.append(label, heading);
+        if (release.name && release.name !== release.tagName) {
+          const name = document.createElement("p");
+          name.className = "release-name";
+          name.textContent = release.name;
+          title.append(name);
+        }
+
+        const time = document.createElement("time");
+        time.dateTime = release.publishedAt;
+        const publishedAt = new Date(release.publishedAt);
+        time.textContent = Number.isNaN(publishedAt.getTime())
+          ? release.publishedAt
+          : dateFormatter.format(publishedAt);
+        head.append(title, time);
+
+        const body = document.createElement("div");
+        body.className = "release-body";
+        const renderedBody = renderBody(release.body);
+        if (renderedBody.childNodes.length) body.append(renderedBody);
+        else body.textContent = "该版本没有填写发布说明。";
+
+        const link = document.createElement("a");
+        link.className = "release-link";
+        link.href = release.htmlUrl;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "在 GitHub 查看此 Release →";
+
+        article.append(head, body, link);
+        return article;
+      };
+
+      const showError = () => {
+        currentVersion.textContent = "暂不可用";
+        releaseList.replaceChildren();
+        const message = document.createElement("p");
+        message.className = "release-status error";
+        message.append(document.createTextNode("暂时无法加载发布日志。"));
+        const link = document.createElement("a");
+        link.href = "https://github.com/ct-yx/BiliKit-Performance/releases";
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "前往 GitHub Releases 查看";
+        message.append(document.createTextNode(" "), link);
+        releaseList.append(message);
+      };
+
+      const load = async () => {
+        try {
+          const response = await fetch("changelog.json", { cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          const releases = Array.isArray(data.releases) ? data.releases : [];
+          if (!releases.length) throw new Error("No published releases");
+          currentVersion.textContent = releases[0].tagName;
+          releaseList.replaceChildren(...releases.map(renderRelease));
+        } catch (error) {
+          console.error("Failed to load release changelog", error);
+          showError();
+        }
+      };
+
+      void load();
+    })();
+  </script>
+</body>
+</html>

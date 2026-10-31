@@ -2307,7 +2307,7 @@
       }
     })();
   }
-  const VERSION = "0.6.44";
+  const VERSION = "0.7.1";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;

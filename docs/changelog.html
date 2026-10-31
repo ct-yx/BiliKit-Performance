@@ -87,6 +87,49 @@
       box-shadow: none;
     }
     .btn.ghost:hover { border-color: var(--muted); background: var(--card); box-shadow: none; }
+    .sponsor {
+      position: fixed;
+      width: min(360px, calc(100vw - 48px));
+      padding: 28px 24px 24px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--bg);
+      color: var(--fg);
+      text-align: center;
+      box-shadow: 0 24px 64px -24px rgba(0, 0, 0, .35);
+    }
+    .sponsor::backdrop { background: rgba(0, 0, 0, .35); }
+    .sponsor h2 { font-size: 20px; margin: 0 0 6px; }
+    .sponsor p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+    .sponsor-links { display: grid; gap: 12px; }
+    .sponsor-links .btn { justify-content: center; }
+    .sponsor-decline {
+      margin-top: 18px;
+      padding: 8px 12px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .sponsor-decline:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+    .sponsor-decline:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 6px; }
+    .sponsor-close {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 32px;
+      height: 32px;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .sponsor-close:hover { background: var(--card); color: var(--fg); }
     .log { padding: 24px 0 96px; }
     .release {
       padding: 42px 0;
@@ -161,10 +204,23 @@
       <p class="lede">记录 BiliKit Performance 的正式 GitHub Release。当前版本：<strong id="current-version">加载中</strong>。</p>
       <nav class="actions" aria-label="页面操作">
         <a class="btn" href="./">返回项目主页</a>
+        <a class="btn ghost" href="https://www.bilibili.com/">返回 Bilibili 首页</a>
         <a class="btn ghost" href="https://github.com/ct-yx/BiliKit-Performance">查看仓库</a>
       </nav>
     </div>
   </header>
+
+  <dialog class="sponsor" id="support-prompt" aria-labelledby="support-prompt-title">
+    <h2 id="support-prompt-title">支持 BiliKit Performance</h2>
+    <p>如果这个项目对你有帮助，欢迎给仓库点个 Star 或赞助一下。</p>
+    <div class="sponsor-links">
+      <a class="btn" href="https://github.com/ct-yx/BiliKit-Performance" target="_blank" rel="noopener">给仓库点个 Star</a>
+      <a class="btn" href="https://ifdian.net/a/Ct_yx" target="_blank" rel="noopener">爱发电</a>
+      <a class="btn ghost" href="https://buymeacoffee.com/ctyx" target="_blank" rel="noopener">Buy Me a Coffee</a>
+    </div>
+    <form method="dialog"><button class="sponsor-decline" type="submit">我不想赞助</button></form>
+    <form method="dialog"><button class="sponsor-close" aria-label="关闭" autofocus>×</button></form>
+  </dialog>
 
   <main class="wrap log">
     <div id="release-list" aria-live="polite">
@@ -178,6 +234,20 @@
     · <a href="https://github.com/ct-yx/BiliKit-Performance/blob/main/LICENSE">MIT License</a>
     · 合并功能使用 <a href="https://github.com/Vanilagy/mediabunny">Mediabunny</a>（MPL-2.0）
   </footer>
+  <script>
+    // 更新日志页每次进入停留两秒后提示支持项目，不写入持久化状态
+    (() => {
+      const dialog = document.getElementById("support-prompt");
+      if (!dialog || typeof dialog.showModal !== "function") return;
+      const show = () => {
+        if (!dialog.open) dialog.showModal();
+      };
+      dialog.addEventListener("click", (e) => {
+        if (e.target === dialog) dialog.close();
+      });
+      window.setTimeout(show, 2e3);
+    })();
+  </script>
   <script>
     (() => {
       const currentVersion = document.querySelector("#current-version");

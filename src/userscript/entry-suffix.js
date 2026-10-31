@@ -1,3 +1,77 @@
+  const UPDATE_REDIRECT_STATE_KEY = "bilikit:performance:update-redirect-v1";
+  const UPDATE_CHANGELOG_URL = "https://ct-yx.github.io/BiliKit-Performance/changelog.html";
+  function readUpdateRedirectState() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(UPDATE_REDIRECT_STATE_KEY) || "null");
+      if (!raw || typeof raw !== "object") return null;
+      return { version: String(raw.version || ""), pending: raw.pending === true };
+    } catch {
+      return null;
+    }
+  }
+  function writeUpdateRedirectState(state) {
+    try {
+      localStorage.setItem(UPDATE_REDIRECT_STATE_KEY, JSON.stringify({
+        version: String(state.version || ""),
+        pending: state.pending === true
+      }));
+    } catch {
+    }
+  }
+  function installedScriptVersion() {
+    let infoVersion = "";
+    try {
+      if (typeof GM_info !== "undefined") infoVersion = GM_info?.script?.version || "";
+    } catch {
+    }
+    return String(infoVersion || VERSION || "").trim();
+  }
+  function installUpdateRedirect() {
+    const currentVersion = installedScriptVersion();
+    if (!currentVersion) return;
+    let state = readUpdateRedirectState();
+    if (!state?.version) {
+      writeUpdateRedirectState({ version: currentVersion, pending: false });
+      return;
+    }
+    if (state.version !== currentVersion) {
+      state = { version: currentVersion, pending: true };
+      writeUpdateRedirectState(state);
+    }
+    const check = () => {
+      if (!isHomePage()) return;
+      const latest = readUpdateRedirectState();
+      if (!latest?.pending || latest.version !== currentVersion) return;
+      // 先清除待跳转标记，避免刷新或多标签页重复跳转。
+      writeUpdateRedirectState({ version: currentVersion, pending: false });
+      const target = new URL(UPDATE_CHANGELOG_URL);
+      target.searchParams.set("from", "bilikit-update");
+      target.searchParams.set("version", currentVersion);
+      location.replace(target.href);
+    };
+    check();
+    const runtime = getRuntimeCoordinator();
+    const historyHooks = runtime.networkHooks();
+    const removePush = historyHooks.addHistory("update-redirect", "pushState", (next) => function(...args) {
+      const result = next.apply(this, args);
+      queueMicrotask(check);
+      return result;
+    });
+    const removeReplace = historyHooks.addHistory("update-redirect", "replaceState", (next) => function(...args) {
+      const result = next.apply(this, args);
+      queueMicrotask(check);
+      return result;
+    });
+    const removePopstate = runtime.listen(window, "popstate", check);
+    const removeHashchange = runtime.listen(window, "hashchange", check);
+    runtime.addCleanup(() => {
+      removePush();
+      removeReplace();
+      removePopstate();
+      removeHashchange();
+    });
+  }
+
   function installSiteDrawer() {
     if (window.__BILIKIT_SITE_DRAWER__) return;
     if (window.top !== window.self) return;
@@ -92,6 +166,7 @@
   let suspendDrawerMedia = (_preserveResume = true) => {
   };
   syncSharedSettings();
+  installUpdateRedirect();
   try {
     localStorage.setItem("bilikit:alive.core", String(Date.now()));
   } catch {

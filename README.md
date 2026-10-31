@@ -2,7 +2,7 @@
 
 面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用。
 
-当前版本：**0.7.0**
+当前版本：**0.7.1**
 
 脚本文件：[bilikit-performance.user.js](bilikit-performance.user.js)
 
@@ -114,7 +114,7 @@ CDN 优选可以进一步设置：
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或其他兼容的 userscript 管理器。
 2. 从 [Raw 地址安装或更新](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)。
-3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.7.0`。
+3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.7.1`。
 
 本项目使用新的脚本名称和 namespace，是独立于旧版 BiliKit Core 的新脚本身份。旧版不会自动升级到本仓库；安装前请先停用旧版，避免两个脚本同时 hook 请求、重复修改页面或产生不稳定行为。
 

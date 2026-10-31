@@ -181,7 +181,7 @@
       border: 1px solid var(--line);
     }
 
-    /* 演示截图和录屏：按素材原始比例显示，视频进入视口才加载播放 */
+    /* 演示截图和录屏：按素材原始比例显示，视频默认静止并由用户手动播放 */
     .shot { margin: 0; min-width: 0; }
     .shot video, .shot img {
       display: block;
@@ -370,6 +370,18 @@
     .sponsor p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
     .sponsor-links { display: grid; gap: 12px; }
     .sponsor-links .btn { justify-content: center; }
+    .sponsor-decline {
+      margin-top: 18px;
+      padding: 8px 12px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .sponsor-decline:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+    .sponsor-decline:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; border-radius: 6px; }
     .sponsor-close {
       position: absolute;
       top: 10px;
@@ -386,32 +398,71 @@
     }
     .sponsor-close:hover { background: var(--card); color: var(--fg); }
 
-    /* 演示录屏的点击暂停：暂停时在中央显示播放图标 */
+    /* 演示录屏：默认静止，播放时隐藏顶部提示 */
     .player { position: relative; }
     .player video { cursor: pointer; }
     .player video:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
-    .play-badge {
+    .play-hint {
       position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 64px;
-      height: 64px;
-      margin: -32px 0 0 -32px;
-      border-radius: 50%;
-      background: rgba(0, 0, 0, .55);
+      top: 12px;
+      left: 12px;
+      z-index: 1;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(24, 25, 28, .72);
       color: #fff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      opacity: 0;
-      transform: scale(.85);
-      transition: opacity .2s ease, transform .2s ease;
+      font-size: 12px;
+      line-height: 1.4;
+      transition: opacity .18s ease, transform .18s ease;
       pointer-events: none;
     }
-    .play-badge svg { width: 28px; height: 28px; margin-left: 3px; }
-    .player.is-paused .play-badge { opacity: 1; transform: scale(1); }
+    .player.is-playing .play-hint { opacity: 0; transform: translateY(-4px); }
+    .speed-control {
+      position: fixed;
+      left: 24px;
+      bottom: max(84px, calc(env(safe-area-inset-bottom) + 56px));
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      box-shadow: 0 14px 34px -20px rgba(0, 0, 0, .55);
+      backdrop-filter: blur(16px) saturate(1.15);
+    }
+    .speed-control[hidden] { display: none; }
+    .speed-label { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .speed-options { display: flex; gap: 4px; }
+    .speed-option {
+      min-width: 52px;
+      min-height: 32px;
+      padding: 4px 8px;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      line-height: 1.2;
+      cursor: pointer;
+    }
+    .speed-option:hover { background: var(--card); color: var(--fg); }
+    .speed-option[aria-pressed="true"] {
+      border-color: var(--pink-ink);
+      background: color-mix(in srgb, var(--pink-ink) 13%, transparent);
+      color: var(--pink-ink);
+      font-weight: 600;
+    }
+    .speed-option:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
     @media (prefers-reduced-motion: reduce) {
       .btn, .btn:hover { transition: none; transform: none; }
+      .play-hint { transition: none; }
+    }
+    @media (max-width: 520px) {
+      .speed-control { left: 16px; right: 16px; bottom: max(72px, calc(env(safe-area-inset-bottom) + 48px)); justify-content: space-between; }
+      .speed-options { flex: 1; justify-content: flex-end; }
     }
 
     /* 竖屏：名称区居中占满剩余空间，三个按钮固定在首屏底部；下滑提示让位给按钮 */
@@ -516,12 +567,14 @@
       </button>
     </nav>
     <dialog class="sponsor" id="sponsor" aria-labelledby="sponsor-title">
-      <h2 id="sponsor-title">赞助 BiliKit</h2>
-      <p>选择一个平台支持开发者。</p>
+      <h2 id="sponsor-title">支持 BiliKit Performance</h2>
+      <p>如果这个项目对你有帮助，欢迎给仓库点个 Star 或赞助一下。</p>
       <div class="sponsor-links">
+        <a class="btn" href="https://github.com/ct-yx/BiliKit-Performance" target="_blank" rel="noopener">给仓库点个 Star</a>
         <a class="btn" href="https://ifdian.net/a/Ct_yx" target="_blank" rel="noopener">爱发电</a>
         <a class="btn ghost" href="https://buymeacoffee.com/ctyx" target="_blank" rel="noopener">Buy Me a Coffee</a>
       </div>
+      <form method="dialog"><button class="sponsor-decline" type="submit">我不想赞助</button></form>
       <form method="dialog"><button class="sponsor-close" aria-label="关闭" autofocus>×</button></form>
     </dialog>
     <a class="scroll-hint" href="#features">
@@ -694,11 +747,20 @@
         </details>
         <details>
           <summary>安装后功能没有出现，应该怎么排查？</summary>
-          <div class="qa-answer"><p>先确认脚本已启用、版本为 0.7.0，并刷新 Bilibili 首页；再检查是否仍启用了旧版 BiliKit Core 或其他会改写播放器和请求的脚本。设置入口只在首页右下角显示。</p></div>
+          <div class="qa-answer"><p>先确认脚本已启用、版本为 0.7.1，并刷新 Bilibili 首页；再检查是否仍启用了旧版 BiliKit Core 或其他会改写播放器和请求的脚本。设置入口只在首页右下角显示。</p></div>
         </details>
       </div>
     </section>
   </main>
+
+  <div class="speed-control" id="speed-control" hidden aria-label="视频播放速度">
+    <span class="speed-label">播放速度</span>
+    <div class="speed-options" role="group" aria-label="选择播放速度">
+      <button class="speed-option" type="button" data-speed="0.75" aria-pressed="false">慢 0.75×</button>
+      <button class="speed-option" type="button" data-speed="1" aria-pressed="true">标准 1.0×</button>
+      <button class="speed-option" type="button" data-speed="1.5" aria-pressed="false">快 1.5×</button>
+    </div>
+  </div>
 
   <footer>
     <a href="./">项目主页</a>
@@ -710,39 +772,76 @@
     <br>赞助：<a href="https://ifdian.net/a/Ct_yx">爱发电</a> · <a href="https://buymeacoffee.com/ctyx">Buy Me a Coffee</a>
   </footer>
   <script>
-    // 演示录屏：进入视口时才加载并播放，离开时暂停；减少动态效果时改为手动播放
+    // 演示录屏：默认静止，点击或键盘操作后才加载并播放；离开视口时暂停
     (() => {
-      const videos = document.querySelectorAll("video[data-src]");
-      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const videos = new Set(document.querySelectorAll("video"));
+      const speedControl = document.getElementById("speed-control");
+      const speedButtons = [...(speedControl?.querySelectorAll("[data-speed]") || [])];
+      const wraps = new WeakMap();
+      const registered = new WeakSet();
+      let playbackRate = 1;
+      let intersectionObserver = null;
       const load = (v) => {
         if (!v.src) v.src = v.dataset.src;
       };
-      if (reduce || !("IntersectionObserver" in window)) {
+      const syncSpeed = () => {
         videos.forEach((v) => {
-          v.preload = "metadata";
-          v.controls = true;
-          load(v);
+          try {
+            v.defaultPlaybackRate = playbackRate;
+            v.playbackRate = playbackRate;
+          } catch {
+          }
         });
-        return;
-      }
-      // 点击（或聚焦后按空格/回车）切换暂停；用户手动暂停的视频滚动回视口时不会自动恢复
-      const userPaused = new WeakSet();
+      };
+      const syncSpeedVisibility = () => {
+        if (!speedControl) return;
+        const hasPlayingVideo = [...videos].some((v) => v.isConnected && !v.paused && !v.ended);
+        speedControl.hidden = !hasPlayingVideo;
+      };
       const toggle = (v) => {
-        if (v.paused) {
-          userPaused.delete(v);
+        if (v.paused || v.ended) {
           load(v);
           v.play().catch(() => { v.controls = true; });
         } else {
-          userPaused.add(v);
           v.pause();
         }
       };
-      videos.forEach((v) => {
+      const registerVideo = (v) => {
+        if (registered.has(v)) return;
+        registered.add(v);
+        videos.add(v);
+        v.addEventListener("play", () => {
+          wraps.get(v)?.classList.add("is-playing");
+          syncSpeedVisibility();
+        });
+        v.addEventListener("pause", () => {
+          wraps.get(v)?.classList.remove("is-playing");
+          syncSpeedVisibility();
+        });
+        v.addEventListener("ended", () => {
+          wraps.get(v)?.classList.remove("is-playing");
+          syncSpeedVisibility();
+        });
+        syncSpeed();
+        intersectionObserver?.observe(v);
+        syncSpeedVisibility();
+      };
+      const setupVideo = (v) => {
+        registerVideo(v);
+        if (!v.matches("video[data-src]") || wraps.has(v)) return;
+        v.autoplay = false;
+        v.removeAttribute("autoplay");
+        v.pause();
         const wrap = document.createElement("div");
         wrap.className = "player";
         v.before(wrap);
         wrap.append(v);
-        wrap.insertAdjacentHTML("beforeend", '<span class="play-badge" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z"/></svg></span>');
+        const hint = document.createElement("span");
+        hint.className = "play-hint";
+        hint.textContent = "点击开始播放";
+        hint.setAttribute("aria-hidden", "true");
+        wrap.append(hint);
+        wraps.set(v, wrap);
         v.tabIndex = 0;
         v.title = "点击暂停 / 播放";
         v.addEventListener("click", () => toggle(v));
@@ -752,33 +851,63 @@
             toggle(v);
           }
         });
-        v.addEventListener("play", () => wrap.classList.remove("is-paused"));
-        v.addEventListener("pause", () => wrap.classList.toggle("is-paused", userPaused.has(v)));
-      });
-
-      const io = new IntersectionObserver((entries) => {
-        entries.forEach(({ target: v, isIntersecting }) => {
-          if (isIntersecting) {
-            if (userPaused.has(v)) return;
-            load(v);
-            v.play().catch(() => { v.controls = true; });
-          } else {
-            v.pause();
-          }
-        });
-      }, { rootMargin: "200px 0px", threshold: 0.15 });
-      videos.forEach((v) => io.observe(v));
+      };
+      if ("IntersectionObserver" in window) {
+        intersectionObserver = new IntersectionObserver((entries) => {
+          entries.forEach(({ target: v, isIntersecting }) => {
+            if (!isIntersecting) v.pause();
+          });
+          syncSpeedVisibility();
+        }, { threshold: 0.15 });
+      }
+      videos.forEach(setupVideo);
+      syncSpeedVisibility();
+      const mutationObserver = "MutationObserver" in window
+        ? new MutationObserver((records) => {
+          records.forEach((record) => record.addedNodes.forEach((node) => {
+            if (!(node instanceof Element)) return;
+            if (node.matches("video")) setupVideo(node);
+            node.querySelectorAll("video").forEach(setupVideo);
+          }));
+        })
+        : null;
+      mutationObserver?.observe(document.body, { childList: true, subtree: true });
+      speedButtons.forEach((button) => button.addEventListener("click", () => {
+        playbackRate = Number(button.dataset.speed) || 1;
+        speedButtons.forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+        syncSpeed();
+      }));
+      window.addEventListener("pagehide", () => {
+        intersectionObserver?.disconnect();
+        mutationObserver?.disconnect();
+      }, { once: true });
     })();
 
-    // 赞助弹窗：点击遮罩也可关闭
+    // 赞助弹窗：手动打开或自动提示后永久记住已处理状态
     (() => {
       const dialog = document.getElementById("sponsor");
       const open = document.getElementById("sponsor-open");
       if (!dialog || !open || typeof dialog.showModal !== "function") return;
-      open.addEventListener("click", () => dialog.showModal());
+      const SUPPORT_PROMPT_KEY = "bilikit:pages-support-prompt-v1";
+      const markHandled = () => {
+        try { localStorage.setItem(SUPPORT_PROMPT_KEY, "1"); } catch {}
+      };
+      const hasHandled = () => {
+        try { return localStorage.getItem(SUPPORT_PROMPT_KEY) === "1"; } catch { return false; }
+      };
+      const show = (automatic = false) => {
+        if (automatic && hasHandled()) return;
+        markHandled();
+        if (!dialog.open) dialog.showModal();
+      };
+      open.addEventListener("click", () => show());
+      dialog.addEventListener("close", markHandled);
+      dialog.addEventListener("cancel", markHandled);
+      dialog.querySelectorAll("a").forEach((link) => link.addEventListener("click", markHandled));
       dialog.addEventListener("click", (e) => {
         if (e.target === dialog) dialog.close();
       });
+      window.setTimeout(() => show(true), 4e3);
     })();
 
     // CDN 测速示意动画：节点取自脚本设置中的国内镜像选项，延迟为随机模拟值

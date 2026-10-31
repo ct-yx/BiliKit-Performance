@@ -784,14 +784,15 @@
       const load = (v) => {
         if (!v.src) v.src = v.dataset.src;
       };
+      const applyPlaybackRate = (v) => {
+        try {
+          if (v.defaultPlaybackRate !== playbackRate) v.defaultPlaybackRate = playbackRate;
+          if (v.playbackRate !== playbackRate) v.playbackRate = playbackRate;
+        } catch {
+        }
+      };
       const syncSpeed = () => {
-        videos.forEach((v) => {
-          try {
-            v.defaultPlaybackRate = playbackRate;
-            v.playbackRate = playbackRate;
-          } catch {
-          }
-        });
+        videos.forEach(applyPlaybackRate);
       };
       const syncSpeedVisibility = () => {
         if (!speedControl) return;
@@ -821,6 +822,9 @@
         v.addEventListener("ended", () => {
           wraps.get(v)?.classList.remove("is-playing");
           syncSpeedVisibility();
+        });
+        ["loadedmetadata", "durationchange", "canplay", "playing", "ratechange"].forEach((eventName) => {
+          v.addEventListener(eventName, () => applyPlaybackRate(v));
         });
         syncSpeed();
         intersectionObserver?.observe(v);

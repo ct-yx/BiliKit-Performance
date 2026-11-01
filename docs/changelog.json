@@ -2,6 +2,13 @@
   "repository": "ct-yx/BiliKit-Performance",
   "releases": [
     {
+      "tagName": "v0.7.1",
+      "name": "BiliKit Performance 0.7.1",
+      "publishedAt": "2026-11-01T02:53:49Z",
+      "htmlUrl": "https://github.com/ct-yx/BiliKit-Performance/releases/tag/v0.7.1",
+      "body": "## 更新内容\n\n- 新增版本更新识别：脚本更新后，首次进入或通过 SPA 导航回到 Bilibili 首页时自动打开更新日志。\n- Pages 首页增加一次性支持提示、手动播放演示视频和 `0.75× / 1.0× / 1.5×` 倍速控制；更新日志页增加每次进入都可显示的支持提示。\n- 修复 Pages 视频倍速在媒体加载或被其他逻辑调整后无法保持所选档位的问题。\n\n## 验证\n\n- `npm run build`、userscript 与 Remux Worker 语法检查通过。\n- 浏览器验证视频播放时显示控制、切换 `1.5×`、加载期间保持倍速，以及外部重置后恢复所选倍速。\n\n## 安装\n\n- [下载 userscript](https://github.com/ct-yx/BiliKit-Performance/releases/download/v0.7.1/bilikit-performance.user.js)\n- [Raw 安装地址](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)\n"
+    },
+    {
       "tagName": "v0.7.0",
       "name": "BiliKit Performance 0.7.0",
       "publishedAt": "2026-10-24T10:54:12Z",

@@ -2,6 +2,13 @@
   "repository": "ct-yx/BiliKit-Performance",
   "releases": [
     {
+      "tagName": "v0.7.2",
+      "name": "BiliKit Performance 0.7.2",
+      "publishedAt": "2026-11-07T13:15:01Z",
+      "htmlUrl": "https://github.com/ct-yx/BiliKit-Performance/releases/tag/v0.7.2",
+      "body": "## 更新内容\n\n- 修复从首页输入 BV 号打开下载工作台时标题、分 P 和作者没有正常获取的问题；目标视频会通过官方 `view` / `playurl` 接口补齐元数据和 DASH 音视频轨道。\n- Bilibili 首页新增 BV 号快速下载入口；顶栏空间不足时自动降级到 BiliKit 设置按钮上方的悬浮入口。\n- 公开收藏夹页增加标准目录 API `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()`，为后续批量下载准备；当前版本不自动下载整个收藏夹。\n- 脚本更新后首次回到 Bilibili 首页时，在新标签页打开 Pages 更新日志并保留当前页面；设置中可以关闭自动打开。\n- Pages 支持提示、视频手动播放和倍速控制保持现有主题风格。\n\n## 验证\n\n- 完整 `test:*` 测试矩阵通过。\n- `npm run build`、重复构建一致性、userscript metadata、userscript 与 Remux Worker 语法检查通过。\n- Edge + Tampermonkey 实测更新日志在新标签页打开，原 Bilibili 页面保持不变。\n\n## 安装\n\n- [下载 userscript](https://github.com/ct-yx/BiliKit-Performance/releases/download/v0.7.2/bilikit-performance.user.js)\n- [Raw 安装地址](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)\n"
+    },
+    {
       "tagName": "v0.7.1",
       "name": "BiliKit Performance 0.7.1",
       "publishedAt": "2026-11-01T02:53:49Z",

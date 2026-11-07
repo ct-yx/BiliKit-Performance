@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.7.1
+// @version      0.7.2
 // @author       ct-yx
 // @description  B 站首页性能与 CDN 优化，提供统一视频列表下载工作台，支持合集视频及条目分 P、收藏夹修复和 MP4 音视频封装。
 // @license      MIT
@@ -20,6 +20,8 @@
 // @connect      www.biliplus.com
 // @connect      www.jijidown.com
 // @grant        GM_download
+// @grant        GM.openInTab
+// @grant        GM_openInTab
 // @grant        GM_xmlhttpRequest
 // @grant        window.focus
 // @sandbox      raw

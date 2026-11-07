@@ -1,7 +1,7 @@
 {
   "name": "bilikit-performance-build",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Builds and embeds the on-demand BiliKit DASH remux worker",
   "scripts": {
     "build": "npm run build:remux-worker && npm run build:userscript",
@@ -17,6 +17,8 @@
     "test:download-collection": "node scripts/test-download-collection.mjs",
     "test:download-bangumi": "node scripts/test-download-bangumi.mjs",
     "test:download-video-list": "node scripts/test-download-video-list.mjs",
+    "test:download-metadata": "node scripts/test-download-metadata.mjs",
+    "test:update-redirect": "node scripts/test-update-redirect.mjs",
     "test:download-mixed-batch": "node scripts/test-download-mixed-batch.mjs",
     "test:download-lifecycle": "node scripts/test-download-lifecycle.mjs",
     "test:download-task-retention": "node scripts/test-download-task-retention.mjs",

@@ -2,7 +2,7 @@
 
 面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用。
 
-当前版本：**0.7.1**
+当前版本：**0.7.2**
 
 脚本文件：[bilikit-performance.user.js](bilikit-performance.user.js)
 
@@ -59,6 +59,11 @@ CDN 处理分为图片和播放资源两条路径：
 - 正式播放时可申请 Screen Wake Lock，防止支持该 API 的浏览器在播放过程中休眠；悬停预览不会申请唤醒锁。
 - “稍后再看”“不感兴趣”“更多”等按钮会放行给 B 站原生处理，不由卡片打开逻辑截断。
 
+### 下载工作台
+
+- 播放器右键菜单仍可打开下载工作台；Bilibili 顶栏新增“下载”入口，顶栏空间不足时自动降级到右下角 BiliKit 设置按钮上方的悬浮入口。
+- 输入完整 BV 号或 BV 后面的字母数字正文后，工作台会通过 B 站官方 `view` / `playurl` 接口读取分 P、CID 和 DASH 音视频轨道；下载入口不需要额外 userscript 权限。
+
 ### 收藏夹修复
 
 - 在 `space.bilibili.com/<mid>/favlist` 页面独立运行，读取 B 站官方收藏夹公开元数据，修复当前页面中的失效收藏卡片，并补全可确认的标题、封面、简介、UP 主、时长、统计和分 P 信息。
@@ -71,10 +76,13 @@ CDN 处理分为图片和播放资源两条路径：
 - 只在当前收藏模块已经接管的卡片标题区域做局部清理；如果旧版脚本再次写回加载占位，BiliKit 会清除该占位，但仍建议停用重复安装的旧版收藏夹脚本。
 - 卡片右上角的 BiliKit 菜单可复制视频信息、查看有效封面、打开 UP 主空间和清除单条本地缓存；不拦截 B 站原生跳转、稍后再看和收藏操作。
 - 缓存键为 `bilikit:favorites-fix:v1`，只保存公开元数据和有限时间的命中/未命中状态，不保存 Cookie、签名 URL、媒体 URL 或第三方脚本代码；未命中结果会在一段时间后重试。可在设置中的“收藏夹修复”模块关闭隐藏条目恢复或卡片工具菜单。
+- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()`，返回带 `bvid`、`aid`、标题、分 P/CID、时长、UP 主和 `source: "public"` 的标准目录，供后续批量下载复用；当前版本暂不自动下载整个收藏夹。
 
 ## 设置面板
 
 脚本只在 B 站首页挂载设置入口：右下角独立齿轮。它不占用、不嵌入也不修改 B 站“最近观看”等原生悬浮按钮；设置面板中的模块可以单独开关。
+
+“更新跳转”模块可以关闭脚本更新后在新标签页打开 Pages 更新日志；当前 Bilibili 页面会保留，关闭后仍会保存待处理版本，重新开启后在回到 Bilibili 首页时处理。
 
 | 模块 | 默认状态 | 作用 |
 | --- | --- | --- |
@@ -114,7 +122,7 @@ CDN 优选可以进一步设置：
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或其他兼容的 userscript 管理器。
 2. 从 [Raw 地址安装或更新](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)。
-3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.7.1`。
+3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.7.2`。
 
 本项目使用新的脚本名称和 namespace，是独立于旧版 BiliKit Core 的新脚本身份。旧版不会自动升级到本仓库；安装前请先停用旧版，避免两个脚本同时 hook 请求、重复修改页面或产生不稳定行为。
 

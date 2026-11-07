@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.7.1
+// @version      0.7.2
 // @author       ct-yx
 // @description  B 站首页性能与 CDN 优化，提供统一视频列表下载工作台，支持合集视频及条目分 P、收藏夹修复和 MP4 音视频封装。
 // @license      MIT
@@ -20,6 +20,8 @@
 // @connect      www.biliplus.com
 // @connect      www.jijidown.com
 // @grant        GM_download
+// @grant        GM.openInTab
+// @grant        GM_openInTab
 // @grant        GM_xmlhttpRequest
 // @grant        window.focus
 // @sandbox      raw
@@ -2930,7 +2932,7 @@ var BiliKitDownloadProgressModule = (() => {
       }
     })();
   }
-  const VERSION = "0.7.1";
+  const VERSION = "0.7.2";
   try {
     window.__BILIKIT_VERSION__ = VERSION;
     window.__BILIKIT_CDN_ENGINE_VERSION__ = VERSION;
@@ -7095,6 +7097,65 @@ var BiliKitDownloadProgressModule = (() => {
     if (!privateResult) throw new Error("公开和鉴权收藏夹接口都没有返回可用数据");
     return { source: "private", info: privateResult.info, medias: privateResult.medias, canRecoverHidden: false };
   }
+  function favoritesFixDownloadEntry(raw, index = 0) {
+    const media = favoritesFixNormalizeMedia(raw, index);
+    const pages = favoritesFixNormalizePages(media.pages);
+    const title = favoritesFixTitle(media) || favoritesFixString(media.title, 800) || favoritesFixDisplayTitle(media);
+    const firstPage = pages[0] || {};
+    return {
+      bvid: media.bvid,
+      aid: media.aid,
+      title,
+      part: firstPage.title || "",
+      cid: String(firstPage.cid || ""),
+      pages,
+      duration: media.duration,
+      ownerName: media.upper?.name || "",
+      source: "public",
+      index: index + 1,
+      url: media.bvid || media.aid ? `https://www.bilibili.com/video/${media.bvid || `av${media.aid}`}/` : ""
+    };
+  }
+  async function favoritesFixGetPublicEntries(options = {}) {
+    const current = favoritesFixResolveInfo();
+    const fid = String(options.fid || current.fid || "").match(/^\d+$/)?.[0] || "";
+    if (!fid) throw new Error("当前页面没有可识别的公开收藏夹 ID");
+    const info = {
+      ...current,
+      fid,
+      keyword: "",
+      type: "0",
+      tid: "0",
+      order: String(options.order || current.order || "mtime")
+    };
+    const all = options.all !== false;
+    const pageSize = Math.max(20, Math.min(40, Math.floor(Number(options.pageSize) || 40)));
+    const output = [];
+    const seen = new Set();
+    let page = 1;
+    let totalHint = 0;
+    for (let requestCount = 0; requestCount < 100; requestCount += 1, page += 1) {
+      const payload = await favoritesFixRequestJson(
+        favoritesFixApiUrl("/medialist/gateway/base/spaceDetail", info, page, pageSize),
+        "收藏夹公开接口",
+        8000
+      );
+      const parsed = favoritesFixParseApiResponse(payload);
+      if (!parsed) throw new Error("收藏夹公开接口没有返回可用数据");
+      totalHint = Number(parsed.info?.media_count || parsed.info?.count || parsed.info?.total || totalHint) || totalHint;
+      if (!parsed.medias.length) break;
+      let added = 0;
+      for (const media of parsed.medias) {
+        const key = favoritesFixKey(media);
+        if (key && seen.has(key)) continue;
+        if (key) seen.add(key);
+        output.push(media);
+        added += 1;
+      }
+      if (!all || totalHint && output.length >= totalHint || !added) break;
+    }
+    return output.map((media, index) => favoritesFixDownloadEntry(media, index)).filter((entry) => entry.bvid || entry.aid);
+  }
   function favoritesFixResolveInfo() {
     const info = parseFavoritesFixUrl(location.href);
     if (info.fid) return info;
@@ -7846,7 +7907,11 @@ var BiliKitDownloadProgressModule = (() => {
     if (document.readyState === "loading") runtime.listen(document, "DOMContentLoaded", () => { attachObserver(); schedule(); }, { once: true });
     else { attachObserver(); schedule(); }
     favoritesFixRefreshStats();
-    window.__BILIKIT_FAVORITES_FIX_API__ = { refresh: () => schedule(true), clear: () => { localStorage.removeItem(FAVORITES_FIX_CACHE_KEY); schedule(true); } };
+    window.__BILIKIT_FAVORITES_FIX_API__ = {
+      refresh: () => schedule(true),
+      clear: () => { localStorage.removeItem(FAVORITES_FIX_CACHE_KEY); schedule(true); },
+      getEntries: (options = {}) => favoritesFixGetPublicEntries(options)
+    };
   }
   const favoritesFix = {
     id: "favorites-fix",
@@ -8575,28 +8640,87 @@ var BiliKitDownloadProgressModule = (() => {
       frame.style.display = "none";
     }
     downloadWorkspaceMode = true;
-    const basePage = isPlayPage() ? currentDownloadPageIdentity() : {
+    const currentPage = isPlayPage() ? currentDownloadPageIdentity() : null;
+    const useCurrentPage = !!currentPage && (!model.videoId || downloadVideoIdentityMatches(
+      model.videoId,
+      model.aid,
+      currentPage.videoId,
+      currentPage.aid
+    ));
+    const basePage = useCurrentPage ? currentPage : {
       videoId: model.videoId,
       bvid: model.bvid,
       aid: model.aid,
       cid: model.cid,
       page: model.page,
       title: model.title,
+      part: model.part,
+      filenameTitle: model.filenameTitle,
+      ownerName: model.ownerName,
       duration: model.duration,
       routeKey: model.routeKey || `${model.videoId}|p=${model.page}|cid=${model.cid}`,
       stateMatchesUrl: true,
       urlVideoId: model.videoId,
       requiresCid: false
     };
+    // 目标 BV 可能与当前播放页不同；此时当前页面 DOM 中的分 P/合集目录
+    // 属于另一个视频，不能先混入工作台，等待目标 BV 的官方 view 响应刷新目录。
     const initialCatalog = Array.isArray(catalog) && catalog.length
       ? catalog
-      : readDownloadEpisodeCatalogFromDom(basePage);
+      : useCurrentPage
+        ? readDownloadEpisodeCatalogFromDom(basePage)
+        : [];
     const initialCollection = Array.isArray(collection) && collection.length
       ? collection
-      : readDownloadCollectionCatalog(basePage);
+      : useCurrentPage
+        ? readDownloadCollectionCatalog(basePage)
+        : [];
     downloadWorkspaceRoot = createUnifiedDownloadWorkspace(model, initialCatalog, initialCollection);
     const catalogController = new AbortController();
     downloadWorkspaceRoot.__bkCatalogController = catalogController;
+    const directTrackFetch = !useCurrentPage;
+    const loadDirectTracks = async () => {
+      const root = downloadWorkspaceRoot;
+      if (!directTrackFetch || !root?.isConnected) return null;
+      root.__bkTrackController?.abort("新的轨道请求已开始");
+      const controller = new AbortController();
+      root.__bkTrackController = controller;
+      updateDownloadWorkspaceFetchStatus({ state: "loading", message: "正在从 B 站播放接口获取当前视频的 DASH 音视频轨…" });
+      try {
+        const selected = root.__bkDownloadVideoListState?.entries?.find((entry) => entry.current)
+          || root.__bkDownloadVideoListState?.entries?.[0];
+        const page = {
+          ...basePage,
+          videoId: selected?.videoId || selected?.bvid || basePage.videoId,
+          bvid: selected?.bvid || basePage.bvid,
+          aid: selected?.aid || basePage.aid,
+          cid: selected?.cid || basePage.cid,
+          page: selected?.page || basePage.page,
+          title: selected?.title || basePage.title,
+          filenameTitle: selected?.filenameTitle || basePage.filenameTitle,
+          part: selected?.part || basePage.part,
+          ownerName: selected?.ownerName || basePage.ownerName,
+          duration: selected?.duration || basePage.duration,
+          routeKey: basePage.routeKey || `quick-bvid:${basePage.videoId}`,
+          stateMatchesUrl: false,
+          urlVideoId: ""
+        };
+        const resolved = await resolveDownloadPageForFetch(page, controller.signal);
+        const result = await fetchBatchDownloadSnapshot(resolved, controller.signal);
+        if (controller.signal.aborted || downloadWorkspaceRoot !== root || !root.isConnected) return null;
+        root.__bkApplyDownloadSnapshot?.(result.snapshot);
+        updateDownloadWorkspaceFetchStatus({ state: "success", message: "已获取当前视频的 DASH 音视频轨" });
+        return result.snapshot;
+      } catch (error) {
+        if (controller.signal.aborted || downloadWorkspaceRoot !== root || !root.isConnected) return null;
+        const message = downloadActiveErrorMessage(error);
+        updateDownloadWorkspaceFetchStatus({ state: "error", message });
+        return null;
+      } finally {
+        if (root.__bkTrackController === controller) root.__bkTrackController = null;
+      }
+    };
+    downloadWorkspaceRoot.__bkFetchDownloadTracks = loadDirectTracks;
     panel.appendChild(downloadWorkspaceRoot);
     panel.classList.add("download-mode");
     panel.classList.remove("parked");
@@ -8614,6 +8738,7 @@ var BiliKitDownloadProgressModule = (() => {
       if (!downloadWorkspaceRoot?.isConnected || downloadWorkspaceRoot.__bkCatalogController !== catalogController) return;
       downloadWorkspaceRoot.__bkRefreshDownloadCatalog?.(bundle?.catalog || []);
       downloadWorkspaceRoot.__bkRefreshDownloadCollection?.(bundle?.collection || []);
+      if (directTrackFetch && !model.videos.length && !model.audios.length) void loadDirectTracks();
     });
   }
   window.__BILIKIT_OPEN_DOWNLOAD_WORKSPACE__ = openDownloadWorkspace;
@@ -11013,7 +11138,9 @@ var BiliKitDownloadProgressModule = (() => {
   }
   function isGenericDownloadTitle(value) {
     const title = normalizeDownloadTitle(value);
-    return !title || /^(?:P\s*\d+[_\-:：\s]*)?(?:哔哩哔哩|bilibili)(?:[_\-:：\s]*(?:哔哩哔哩|bilibili))*$/i.test(title) || /^(?:BV|av)\w+$/i.test(title);
+    return !title
+      || /^(?:P\s*\d+[_\-:：\s]*)?(?:哔哩哔哩|bilibili)(?:[_\-:：\s]*(?:哔哩哔哩|bilibili|视频|video))*$/i.test(title)
+      || /^(?:BV|av)\w+$/i.test(title);
   }
   function isGenericDownloadPart(value) {
     return /^(?:P\s*\d+|第\s*\d+\s*[P集期]|C\s*\d+(?:\s*[_-]\s*P\s*\d+)?|E\s*\d+|S\s*\d+\s*E\s*\d+)$/i.test(normalizeDownloadTitle(value));
@@ -11531,6 +11658,19 @@ var BiliKitDownloadProgressModule = (() => {
     }
     return { data, returnedId };
   }
+  function downloadPageNeedsViewMetadata(page) {
+    return isGenericDownloadTitle(page?.title)
+      || !!page?.filenameTitle && isGenericDownloadTitle(page.filenameTitle);
+  }
+  function downloadViewOwnerName(data, fallback = "") {
+    return selectDownloadAuthor(
+      data?.owner?.name,
+      data?.owner?.uname,
+      data?.author,
+      data?.up_name,
+      fallback
+    );
+  }
   function normalizeBangumiDuration(value) {
     const number = Math.max(0, Number(value) || 0);
     return number > 10000 ? number / 1000 : number;
@@ -11688,6 +11828,8 @@ var BiliKitDownloadProgressModule = (() => {
     const pageItems = Array.isArray(data?.pages) && data.pages.length
       ? data.pages
       : data?.cid ? [{ page: basePage.page, cid: data.cid, part: `P${basePage.page}` }] : [];
+    const officialTitle = selectDownloadTitle(data?.title, basePage?.title) || "Bilibili 视频";
+    const officialOwnerName = downloadViewOwnerName(data, basePage?.ownerName);
     const viewEntries = pageItems.map((item, index) => ({
       videoId: returnedId || basePage.videoId,
       bvid: normalizedDownloadBvid(data?.bvid) || basePage.bvid,
@@ -11695,7 +11837,9 @@ var BiliKitDownloadProgressModule = (() => {
       page: Number(item?.page) || index + 1,
       cid: String(item?.cid || ""),
       part: item?.part || `P${Number(item?.page) || index + 1}`,
-      title: basePage.title,
+      title: officialTitle,
+      filenameTitle: officialTitle,
+      ownerName: officialOwnerName,
       duration: Number(item?.duration) || 0,
       durationLabel: formatDownloadEpisodeDuration(item?.duration),
       source: "view"
@@ -11718,6 +11862,7 @@ var BiliKitDownloadProgressModule = (() => {
         pages: episode?.pages,
         title: episode?.title || arc?.title || episodePage?.part,
         part: episodePage?.part || episode?.title || arc?.title,
+        ownerName: downloadViewOwnerName(episode?.owner || arc?.owner || data?.owner, data?.author),
         duration: episodePage?.duration || episode?.duration || episode?.duration_seconds,
         current: downloadVideoIdentityMatches(episode?.bvid || arc?.bvid, episode?.aid || arc?.aid, basePage.videoId, basePage.aid),
         source: "view"
@@ -11794,6 +11939,7 @@ var BiliKitDownloadProgressModule = (() => {
       cid: String(entry?.cid || "").match(/^\d+$/)?.[0] || "",
       part: normalizeDownloadTitle(entry?.part || entry?.title || `P${page}`) || `P${page}`,
       title: selectDownloadTitle(entry?.title, basePage?.title) || "Bilibili 视频",
+      filenameTitle: selectDownloadTitle(entry?.filenameTitle, entry?.title, basePage?.filenameTitle, basePage?.title) || "Bilibili 视频",
       ownerName: selectDownloadAuthor(entry?.ownerName, basePage?.ownerName),
       musicTitle: selectDownloadTitle(entry?.musicTitle, basePage?.musicTitle),
       artist: selectDownloadAuthor(entry?.artist, basePage?.artist),
@@ -13100,12 +13246,12 @@ var BiliKitDownloadProgressModule = (() => {
       aid: page.aid || request.aid || responseAid,
       cid: String(page.cid),
       page: Number(page.page) || 1,
-      title: page.title,
-      part: page.part,
-      ownerName: page.ownerName,
+      title: selectDownloadTitle(page.title, responseArc.title, data?.title) || page.title,
+      part: selectDownloadPart(page.part, responseArc.part, data?.part),
+      ownerName: downloadViewOwnerName(data, page.ownerName),
       musicTitle: page.musicTitle,
       artist: page.artist,
-      filenameTitle: page.filenameTitle || page.seasonTitle || page.title,
+      filenameTitle: selectDownloadTitle(page.filenameTitle, page.seasonTitle, page.title, responseArc.title, data?.title) || page.filenameTitle || page.seasonTitle || page.title,
         downloadScope: isBangumi ? "bangumi" : "episodes",
         seasonId: page.seasonId || request.seasonId || responseSeasonId,
         epId: page.epId || request.epId || responseEpId,
@@ -13158,7 +13304,10 @@ var BiliKitDownloadProgressModule = (() => {
     if (inDrawer) postDrawer("bk-drawer-download-fetch-status", { state: status, message: String(message || "").slice(0, 180) });
   }
   async function resolveDownloadPageForFetch(page, signal) {
-    if (page.cid && page.downloadScope !== "bangumi") return page;
+    // 快速 BV 入口会先从 view 目录拿到 CID，但标题/作者仍是入口占位值。
+    // 只有正式元数据已经存在时才可以直接复用 CID；否则继续读取同一个
+    // 官方 view 响应，避免工作台和文件名停留在“Bilibili 视频/未知作者”。
+    if (page.cid && page.downloadScope !== "bangumi" && !downloadPageNeedsViewMetadata(page)) return page;
     if (page.downloadScope === "bangumi") {
       if (!page.epId && !page.seasonId && !page.videoId && !page.cid) throw new Error("当前番剧缺少可识别的集或季 ID");
       const data = await fetchDownloadBangumiSeasonData(page, signal);
@@ -13188,33 +13337,20 @@ var BiliKitDownloadProgressModule = (() => {
       };
     }
     if (!page.videoId) throw new Error("当前页面没有可识别的视频 ID");
-    const viewUrl = new URL("https://api.bilibili.com/x/web-interface/view");
-    if (page.bvid) viewUrl.searchParams.set("bvid", page.bvid);
-    else {
-      const aid = page.aid || String(page.videoId || "").match(/^av(\d+)$/)?.[1] || "";
-      if (!aid) throw new Error("当前视频的 AV ID 不可用");
-      viewUrl.searchParams.set("aid", aid);
-    }
-    const response = await downloadRequestJson(viewUrl.href, { signal });
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new Error(`视频信息接口 HTTP ${response.status}`);
-    }
-    if (!response.ok) throw new Error(`视频信息接口 HTTP ${response.status}`);
-    if (Number(payload?.code) !== 0 || !payload?.data) {
-      throw new Error(`视频信息接口返回 ${Number(payload?.code) || "未知错误"}`);
-    }
-    const data = payload.data;
+    const { data, returnedId: returnedVideoId } = await fetchDownloadViewData(page, signal);
     const returnedBvid = normalizedDownloadBvid(data.bvid);
     const returnedAid = normalizedDownloadAid(data.aid);
-    const returnedVideoId = normalizedDownloadVideoId(returnedBvid || (returnedAid ? `av${returnedAid}` : ""));
     if (returnedVideoId && !downloadVideoIdentityMatches(page.videoId, page.aid, returnedVideoId, returnedAid)) {
       throw new Error("视频信息与当前 URL 不一致");
     }
     const pages = Array.isArray(data.pages) ? data.pages : [];
-    const explicitPage = parseDownloadPageUrl().page;
+    const urlIdentity = parseDownloadPageUrl();
+    // 快速下载可以在另一个视频页上输入目标 BV。只有当前 URL 与目标
+    // 视频身份一致时，才使用 URL 中的 p 参数；否则应从目标视频的
+    // view 响应选择默认分 P，避免误用当前页面的 p=2 等参数。
+    const explicitPage = urlIdentity.videoId && downloadPageIdentityMatches(page, urlIdentity.videoId, urlIdentity.aid)
+      ? urlIdentity.page
+      : 0;
     const statePage = page.stateMatchesUrl ? Number(page.page) || 0 : 0;
     const wantedPage = explicitPage || statePage;
     let selected = wantedPage > 0 ? pages.find((item) => Number(item.page) === wantedPage) : null;
@@ -13228,6 +13364,11 @@ var BiliKitDownloadProgressModule = (() => {
       videoId: page.videoId || returnedVideoId,
       cid,
       page: Number(selected?.page) || wantedPage || 1,
+      title: selectDownloadTitle(data.title, page.title) || page.title,
+      filenameTitle: selectDownloadTitle(data.title, page.filenameTitle, page.title) || page.filenameTitle || page.title,
+      part: selectDownloadPart(selected?.part, page.part),
+      ownerName: downloadViewOwnerName(data, page.ownerName),
+      duration: Number(selected?.duration || data.duration) || Number(page.duration) || 0,
       aid: String(data.aid || page.aid || "").match(/^\d+$/)?.[0] || page.aid || ""
     };
   }
@@ -14555,6 +14696,7 @@ var BiliKitDownloadProgressModule = (() => {
       cid: String(entry.cid || ""),
       page: Math.max(1, Number(entry.page) || 1),
       title: selectDownloadTitle(basePage.title, entry.title) || basePage.title,
+      filenameTitle: selectDownloadTitle(entry.filenameTitle, entry.title, basePage.filenameTitle, basePage.title) || basePage.filenameTitle || basePage.title,
       part: selectDownloadPart(entry.part, basePage.part),
       ownerName: selectDownloadAuthor(entry.ownerName, basePage.ownerName),
       musicTitle: selectDownloadTitle(entry.musicTitle, basePage.musicTitle),
@@ -14672,7 +14814,9 @@ var BiliKitDownloadProgressModule = (() => {
       aid: normalizedDownloadAid(data.aid) || page.aid,
       cid,
       title: officialTitle,
+      filenameTitle: selectDownloadTitle(data.title, page.filenameTitle, page.title, officialTitle) || officialTitle,
       part: selectDownloadPart(selectedPage?.part, page.part, entry.part),
+      ownerName: downloadViewOwnerName(data, page.ownerName),
       duration: Number(selectedPage?.duration || data.duration) || page.duration
     };
   }
@@ -14935,6 +15079,7 @@ var BiliKitDownloadProgressModule = (() => {
     root.__bkDispose = () => {
       window.removeEventListener(BILIKIT_THEME_EVENT, syncTheme);
       try { root.__bkCatalogController?.abort("工作台已关闭"); } catch {}
+      try { root.__bkTrackController?.abort("工作台已关闭"); } catch {}
     };
     syncTheme();
     window.addEventListener(BILIKIT_THEME_EVENT, syncTheme);
@@ -15133,7 +15278,7 @@ var BiliKitDownloadProgressModule = (() => {
       wrap.append(text, select);
       return { wrap, select };
     };
-    const qualityOptions = [];
+    let qualityOptions = [];
     const seenQualities = new Set();
     for (const track of model.videos) {
       const key = String(track.id);
@@ -15203,6 +15348,7 @@ var BiliKitDownloadProgressModule = (() => {
     };
     const retryButton = makeAction("重新获取轨道", false, () => {
       if (inDrawer) postFrameCommand("bk-drawer-download-retry");
+      else if (DOWNLOAD_WORKSPACE_ROOT?.__bkFetchDownloadTracks) void DOWNLOAD_WORKSPACE_ROOT.__bkFetchDownloadTracks();
       else void fetchCurrentDownloadPlayinfo(true);
     });
     retryButton.dataset.bkDownloadRetry = "";
@@ -15248,6 +15394,48 @@ var BiliKitDownloadProgressModule = (() => {
       separateButton.disabled = !selectedVideo() || !selectedAudio();
       audioOnlyButton.disabled = !selectedAudio();
     };
+    const refreshTrackSelectors = () => {
+      qualityOptions = [];
+      const seen = new Set();
+      for (const track of model.videos) {
+        const key = String(track.id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        qualityOptions.push({ ...track, optionLabel: track.qualityLabel || `画质 ${key}` });
+      }
+      qualityControl.select.replaceChildren();
+      qualityControl.select.disabled = !qualityOptions.length;
+      if (!qualityOptions.length) {
+        const option = document.createElement("option");
+        option.textContent = "当前页面没有可用视频轨";
+        qualityControl.select.appendChild(option);
+      } else {
+        qualityOptions.forEach((track, index) => {
+          const option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = track.optionLabel;
+          qualityControl.select.appendChild(option);
+        });
+        const preferred = qualityOptions.findIndex((track) => String(track.id) === String(model.quality));
+        qualityControl.select.value = String(preferred >= 0 ? preferred : 0);
+      }
+      audioControl.select.replaceChildren();
+      audioControl.select.disabled = !model.audios.length;
+      if (!model.audios.length) {
+        const option = document.createElement("option");
+        option.textContent = "当前页面没有可用音频轨";
+        audioControl.select.appendChild(option);
+      } else {
+        model.audios.forEach((track, index) => {
+          const option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = track.optionLabel || downloadTrackLabel(track);
+          audioControl.select.appendChild(option);
+        });
+      }
+      refreshCodecOptions();
+      refreshMergeButton();
+    };
     const refreshVideoList = (preserveSelection = true) => {
       const previous = videoListState.selected;
       videoListState.entries = buildDownloadVideoList(sourceCatalog, sourceCollection, model);
@@ -15258,6 +15446,17 @@ var BiliKitDownloadProgressModule = (() => {
       const current = videoListState.entries.find((entry) => entry.current);
       videoListState.selected = new Set((keep.length ? keep : current ? [current] : []).map((entry) => entry.listKey));
       refreshList();
+    };
+    root.__bkApplyDownloadSnapshot = (snapshot) => {
+      const next = normalizeDownloadSnapshot(snapshot);
+      if (!next) return false;
+      Object.assign(model, next);
+      root.dataset.bkVideoTrackCount = String(model.videos.length);
+      root.dataset.bkAudioTrackCount = String(model.audios.length);
+      videoTitle.textContent = model.title;
+      refreshTrackSelectors();
+      refreshVideoList(true);
+      return true;
     };
     root.__bkRefreshDownloadCatalog = (entries) => {
       sourceCatalog = Array.isArray(entries) ? entries.slice() : [];
@@ -15347,8 +15546,265 @@ var BiliKitDownloadProgressModule = (() => {
     runtime.addCleanup(dispose);
     return dispose;
   }
+  const QUICK_DOWNLOAD_STYLE_ID = "bilikit-quick-download-style";
+  const QUICK_DOWNLOAD_ENTRY_ID = "bilikit-quick-download-entry";
+  const QUICK_DOWNLOAD_FLOAT_ID = "bilikit-quick-download-float";
+  const QUICK_DOWNLOAD_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>';
+  function quickDownloadBvid(value) {
+    const raw = String(value || "").trim().replace(/^https?:\/\/[^/]+\/video\//i, "").split(/[/?#]/, 1)[0];
+    if (!raw) return "";
+    const withPrefix = /^BV/i.test(raw) ? `BV${raw.slice(2)}` : `BV${raw}`;
+    return /^BV[0-9A-Za-z]+$/.test(withPrefix) ? withPrefix : "";
+  }
+  function quickDownloadEnsureStyle() {
+    if (document.getElementById(QUICK_DOWNLOAD_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = QUICK_DOWNLOAD_STYLE_ID;
+    style.textContent = `
+.bk-quick-download-entry{display:flex!important;align-items:center;justify-content:center}
+.bk-quick-download-entry .bk-quick-download-button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:54px;height:44px;padding:0 6px;border:0;border-radius:8px;background:transparent;color:inherit;cursor:pointer;font:inherit;line-height:1;white-space:nowrap}
+.bk-quick-download-entry .bk-quick-download-button:hover{background:rgba(255,255,255,.12);color:var(--brand_blue,#00aeec)}
+.bk-quick-download-button svg{width:20px;height:20px;display:block}
+.bk-quick-download-button span{font-size:12px;line-height:1.1}
+.bk-quick-download-float{position:fixed;right:24px;bottom:82px;z-index:99990;display:flex;align-items:center;justify-content:center}
+.bk-quick-download-float[hidden],.bk-quick-download-entry[hidden]{display:none!important}
+.bk-quick-download-float .bk-quick-download-button{display:flex;align-items:center;gap:6px;min-height:38px;padding:0 13px;border:1px solid rgba(255,255,255,.12);border-radius:20px;background:rgba(22,23,28,.92);box-shadow:0 3px 14px rgba(0,0,0,.3);color:#fff;cursor:pointer;font:13px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.bk-quick-download-float .bk-quick-download-button:hover{transform:translateY(-2px);color:#00aeec}
+.bk-quick-download-float .bk-quick-download-button:active{transform:scale(.95)}
+.bk-quick-download-overlay{position:fixed;inset:0;z-index:2147483502;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.48);opacity:0;visibility:hidden;transition:opacity .18s ease,visibility 0s linear .18s;backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px)}
+.bk-quick-download-overlay.open{opacity:1;visibility:visible;transition:opacity .18s ease}
+.bk-quick-download-card{width:min(360px,calc(100vw - 32px));padding:20px;border:1px solid rgba(255,255,255,.12);border-radius:16px;background:#1c1d22;color:#e3e5e7;box-shadow:0 16px 56px rgba(0,0,0,.45);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;transform:translateY(8px) scale(.98);transition:transform .18s ease}
+.bk-quick-download-overlay.open .bk-quick-download-card{transform:none}
+.bk-quick-download-head{display:flex;align-items:center;gap:10px}
+.bk-quick-download-head h2{margin:0;font-size:17px;font-weight:600}
+.bk-quick-download-close{margin-left:auto;width:30px;height:30px;border:1px solid rgba(255,255,255,.14);border-radius:50%;background:rgba(255,255,255,.05);color:rgba(255,255,255,.72);font-size:18px;line-height:1;cursor:pointer}
+.bk-quick-download-close:hover{border-color:#fb7299;color:#fb7299}
+.bk-quick-download-help{margin:12px 0 16px;color:rgba(255,255,255,.56);font-size:13px}
+.bk-quick-download-label{display:block;color:rgba(255,255,255,.78);font-size:13px}
+.bk-quick-download-input{display:block;width:100%;height:40px;margin-top:7px;padding:0 11px;border:1px solid rgba(255,255,255,.16);border-radius:9px;background:rgba(255,255,255,.06);color:#e3e5e7;outline:none;font:inherit}
+.bk-quick-download-input:focus{border-color:#fb7299}
+.bk-quick-download-error{min-height:20px;margin:5px 0 0;color:#fb7299;font-size:12px}
+.bk-quick-download-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:10px}
+.bk-quick-download-actions button{min-height:36px;padding:0 14px;border-radius:9px;font:inherit;cursor:pointer}
+.bk-quick-download-cancel{border:1px solid rgba(255,255,255,.18);background:transparent;color:#e3e5e7}
+.bk-quick-download-confirm{border:0;background:#fb7299;color:#fff;font-weight:600}
+.bk-quick-download-confirm:hover{filter:brightness(1.08)}
+@media(prefers-reduced-motion:reduce){.bk-quick-download-overlay,.bk-quick-download-card,.bk-quick-download-float .bk-quick-download-button{transition:none!important}}
+@media(prefers-color-scheme:light){.bk-quick-download-float .bk-quick-download-button{border-color:rgba(0,0,0,.12);background:rgba(255,255,255,.94);box-shadow:0 3px 14px rgba(0,0,0,.16);color:#18191c}.bk-quick-download-card{border-color:rgba(0,0,0,.1);background:#fff;color:#18191c;box-shadow:0 16px 56px rgba(0,0,0,.22)}.bk-quick-download-help{color:rgba(0,0,0,.54)}.bk-quick-download-label{color:rgba(0,0,0,.72)}.bk-quick-download-input{border-color:rgba(0,0,0,.14);background:rgba(0,0,0,.04);color:#18191c}.bk-quick-download-close{border-color:rgba(0,0,0,.12);background:rgba(0,0,0,.04);color:rgba(0,0,0,.56)}.bk-quick-download-cancel{border-color:rgba(0,0,0,.18);color:#18191c}}
+`;
+    (document.head || document.documentElement).appendChild(style);
+  }
+  function quickDownloadButton(label, className = "") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `bk-quick-download-button${className ? ` ${className}` : ""}`;
+    button.innerHTML = `${QUICK_DOWNLOAD_ICON}<span>${label}</span>`;
+    button.setAttribute("aria-label", "打开 BiliKit 下载工作台");
+    button.title = "输入 BV 号打开下载工作台";
+    return button;
+  }
+  function installQuickDownloadEntry() {
+    if (window.top !== window.self || window.__BILIKIT_QUICK_DOWNLOAD__) return;
+    window.__BILIKIT_QUICK_DOWNLOAD__ = true;
+    const runtime = getRuntimeCoordinator();
+    let topEntry = null;
+    let floatEntry = null;
+    let overlay = null;
+    let input = null;
+    let error = null;
+    let positionFrame = 0;
+    const removeHomeEntries = () => {
+      overlay?.remove();
+      topEntry?.remove();
+      floatEntry?.remove();
+      document.getElementById(QUICK_DOWNLOAD_STYLE_ID)?.remove();
+      overlay = null;
+      topEntry = null;
+      floatEntry = null;
+      input = null;
+      error = null;
+    };
+    const close = () => {
+      if (!overlay) return;
+      overlay.classList.remove("open");
+      input?.blur();
+    };
+    const submit = () => {
+      const bvid = quickDownloadBvid(input?.value);
+      if (!bvid) {
+        if (error) error.textContent = "请输入完整 BV 号，或输入 BV 后面的字母数字正文";
+        input?.focus();
+        return;
+      }
+      const open = window.__BILIKIT_OPEN_DOWNLOAD_WORKSPACE__;
+      if (typeof open !== "function") {
+        if (error) error.textContent = "下载工作台尚未准备好，请稍后重试";
+        return;
+      }
+      close();
+      open({
+        videoId: bvid,
+        bvid,
+        title: "Bilibili 视频",
+        filenameTitle: "Bilibili 视频",
+        page: 1,
+        duration: 0,
+        downloadScope: "episodes",
+        routeKey: `quick-bvid:${bvid}`,
+        videos: [],
+        audios: []
+      });
+    };
+    const openDialog = () => {
+      if (!isHomePage()) return;
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.className = "bk-quick-download-overlay";
+        const card = document.createElement("div");
+        card.className = "bk-quick-download-card";
+        const head = document.createElement("div");
+        head.className = "bk-quick-download-head";
+        const title = document.createElement("h2");
+        title.textContent = "快速打开下载工作台";
+        const closeButton = document.createElement("button");
+        closeButton.type = "button";
+        closeButton.className = "bk-quick-download-close";
+        closeButton.textContent = "×";
+        closeButton.setAttribute("aria-label", "关闭");
+        closeButton.addEventListener("click", close);
+        head.append(title, closeButton);
+        const help = document.createElement("p");
+        help.className = "bk-quick-download-help";
+        help.textContent = "输入完整 BV 号，或只输入 BV 后面的字母数字正文。";
+        const label = document.createElement("label");
+        label.className = "bk-quick-download-label";
+        label.textContent = "BV 号";
+        input = document.createElement("input");
+        input.className = "bk-quick-download-input";
+        input.type = "text";
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.placeholder = "例如 BV1xx411c7mD 或 1xx411c7mD";
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submit();
+          }
+        });
+        label.appendChild(input);
+        error = document.createElement("p");
+        error.className = "bk-quick-download-error";
+        const actions = document.createElement("div");
+        actions.className = "bk-quick-download-actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "bk-quick-download-cancel";
+        cancel.textContent = "取消";
+        cancel.addEventListener("click", close);
+        const confirm = document.createElement("button");
+        confirm.type = "button";
+        confirm.className = "bk-quick-download-confirm";
+        confirm.textContent = "确认";
+        confirm.addEventListener("click", submit);
+        actions.append(cancel, confirm);
+        card.append(head, help, label, error, actions);
+        overlay.appendChild(card);
+        overlay.addEventListener("click", (event) => {
+          if (event.target === overlay) close();
+        });
+        document.body.appendChild(overlay);
+      }
+      if (error) error.textContent = "";
+      if (input) input.value = "";
+      overlay.classList.add("open");
+      input?.focus();
+    };
+    const addTopEntry = () => {
+      const main = document.querySelector(".right-entry__main");
+      if (!main) return null;
+      if (!topEntry?.isConnected) {
+        topEntry = document.createElement("div");
+        topEntry.id = QUICK_DOWNLOAD_ENTRY_ID;
+        topEntry.className = "right-entry__item bk-quick-download-entry";
+        const button = quickDownloadButton("下载");
+        button.addEventListener("click", openDialog);
+        topEntry.appendChild(button);
+      }
+      const upload = main.querySelector(".right-upload-entry");
+      if (topEntry.parentElement !== main) main.insertBefore(topEntry, upload || null);
+      return main;
+    };
+    const addFloatEntry = () => {
+      if (!floatEntry?.isConnected) {
+        floatEntry = document.createElement("div");
+        floatEntry.id = QUICK_DOWNLOAD_FLOAT_ID;
+        floatEntry.className = "bk-quick-download-float";
+        const button = quickDownloadButton("下载");
+        button.addEventListener("click", openDialog);
+        floatEntry.appendChild(button);
+        document.body.appendChild(floatEntry);
+      }
+      return floatEntry;
+    };
+    const position = () => {
+      positionFrame = 0;
+      if (!isHomePage()) {
+        removeHomeEntries();
+        return;
+      }
+      if (!document.body) return;
+      quickDownloadEnsureStyle();
+      const main = addTopEntry();
+      const fallback = addFloatEntry();
+      if (!main) {
+        if (topEntry) topEntry.hidden = true;
+        fallback.hidden = false;
+        return;
+      }
+      // 先临时隐藏入口测量原有内容宽度，再把入口自身宽度加回去；这样
+      // 溢出时不会因为隐藏入口后空间变宽而在“顶栏/悬浮”之间来回抖动。
+      const entryWidth = topEntry.getBoundingClientRect().width || 54;
+      topEntry.hidden = true;
+      const baseWidth = main.scrollWidth;
+      const fits = window.innerWidth >= 1100 && baseWidth + entryWidth <= main.clientWidth + 2;
+      topEntry.hidden = !fits;
+      fallback.hidden = fits;
+    };
+    const schedulePosition = () => {
+      if (positionFrame) return;
+      positionFrame = requestAnimationFrame(position);
+    };
+    const historyHooks = runtime.networkHooks();
+    const removePush = historyHooks.addHistory("quick-download-home", "pushState", (next) => function(...args) {
+      const result = next.apply(this, args);
+      schedulePosition();
+      return result;
+    });
+    const removeReplace = historyHooks.addHistory("quick-download-home", "replaceState", (next) => function(...args) {
+      const result = next.apply(this, args);
+      schedulePosition();
+      return result;
+    });
+    const observer = runtime.createObserver(() => schedulePosition());
+    if (observer && document.body) observer.observe(document.body, { childList: true, subtree: true });
+    runtime.listen(window, "resize", schedulePosition, { passive: true });
+    runtime.listen(window, "popstate", schedulePosition);
+    runtime.listen(window, "hashchange", schedulePosition);
+    runtime.listen(document, "DOMContentLoaded", schedulePosition, { once: true });
+    schedulePosition();
+    runtime.addCleanup(() => {
+      if (positionFrame) cancelAnimationFrame(positionFrame);
+      removePush();
+      removeReplace();
+      observer?.disconnect();
+      removeHomeEntries();
+      delete window.__BILIKIT_QUICK_DOWNLOAD__;
+    });
+  }
   const UPDATE_REDIRECT_STATE_KEY = "bilikit:performance:update-redirect-v1";
   const UPDATE_CHANGELOG_URL = "https://ct-yx.github.io/BiliKit-Performance/changelog.html";
+  const UPDATE_REDIRECT_ENABLED_KEY = "module.update-redirect.enabled";
+  const UPDATE_REDIRECT_AUTO_OPEN_KEY = "module.update-redirect.cfg.autoOpen";
   function readUpdateRedirectState() {
     try {
       const raw = JSON.parse(localStorage.getItem(UPDATE_REDIRECT_STATE_KEY) || "null");
@@ -15365,6 +15821,42 @@ var BiliKitDownloadProgressModule = (() => {
         pending: state.pending === true
       }));
     } catch {
+    }
+  }
+  function openUpdateChangelog(url) {
+    try {
+      if (typeof GM !== "undefined" && typeof GM.openInTab === "function") {
+        const opened = GM.openInTab(url, { active: true, insert: true, setParent: true });
+        if (opened && typeof opened.catch === "function") {
+          void opened.catch(() => {
+            try {
+              if (typeof GM_openInTab === "function") {
+                GM_openInTab(url, { active: true, insert: true, setParent: true });
+                return;
+              }
+            } catch {
+            }
+            try {
+              window.open(url, "_blank", "noopener,noreferrer");
+            } catch {
+            }
+          });
+        }
+        return true;
+      }
+    } catch {
+    }
+    try {
+      if (typeof GM_openInTab === "function") {
+        GM_openInTab(url, { active: true, insert: true, setParent: true });
+        return true;
+      }
+    } catch {
+    }
+    try {
+      return Boolean(window.open(url, "_blank", "noopener,noreferrer"));
+    } catch {
+      return false;
     }
   }
   function installedScriptVersion() {
@@ -15389,14 +15881,16 @@ var BiliKitDownloadProgressModule = (() => {
     }
     const check = () => {
       if (!isHomePage()) return;
+      if (get(UPDATE_REDIRECT_ENABLED_KEY, true) === false || get(UPDATE_REDIRECT_AUTO_OPEN_KEY, true) === false) return;
       const latest = readUpdateRedirectState();
       if (!latest?.pending || latest.version !== currentVersion) return;
-      // 先清除待跳转标记，避免刷新或多标签页重复跳转。
+      // 先清除待跳转标记，避免刷新或多标签页重复打开。
       writeUpdateRedirectState({ version: currentVersion, pending: false });
       const target = new URL(UPDATE_CHANGELOG_URL);
       target.searchParams.set("from", "bilikit-update");
       target.searchParams.set("version", currentVersion);
-      location.replace(target.href);
+      // 保留当前 Bilibili 页面，把更新日志放到新标签页。
+      openUpdateChangelog(target.href);
     };
     check();
     const runtime = getRuntimeCoordinator();
@@ -15413,11 +15907,13 @@ var BiliKitDownloadProgressModule = (() => {
     });
     const removePopstate = runtime.listen(window, "popstate", check);
     const removeHashchange = runtime.listen(window, "hashchange", check);
+    const removeSettings = runtime.listen(window, SETTINGS_EVENT, check);
     runtime.addCleanup(() => {
       removePush();
       removeReplace();
       removePopstate();
       removeHashchange();
+      removeSettings();
     });
   }
 
@@ -15899,6 +16395,25 @@ var BiliKitDownloadProgressModule = (() => {
       suspendDrawerMedia = (_preserveResume = true) => {};
     });
   }
+  const updateRedirect = {
+    id: "update-redirect",
+    name: "更新跳转",
+    description: "脚本更新后首次回到 Bilibili 首页时打开 Pages 更新日志",
+    category: "系统",
+    defaultEnabled: true,
+    runAt: "start",
+    settings: [
+      {
+        key: "autoOpen",
+        type: "toggle",
+        label: "更新后自动打开 Pages 更新日志",
+        default: true,
+        hint: "关闭后仍会记录当前版本；重新开启时，待处理的版本会在下一次回到首页时跳转"
+      }
+    ],
+    init: () => {
+    }
+  };
   setupDrawerMediaLifecycle();
   setupDrawerLocationSync();
   suspendDrawerMedia(false);
@@ -15913,6 +16428,7 @@ var BiliKitDownloadProgressModule = (() => {
     downloadWorkspace,
     noLogin,
     favoritesFix,
+    updateRedirect,
     // 注册在 cdn-pick 之后：其 fetch/XHR 与 __playinfo__ hook 需叠在最外层（改请求；cdn-pick 改响应 host）
     wayBack
     // 视频页回退栈胶囊（顶层 + 抽屉 iframe）
@@ -15923,6 +16439,7 @@ var BiliKitDownloadProgressModule = (() => {
   installHomeFeedLayoutStability();
   runAll();
   installSiteDrawer();
+  installQuickDownloadEntry();
   mountPanel();
 
 })();

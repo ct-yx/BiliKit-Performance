@@ -382,7 +382,9 @@
   }
   function isGenericDownloadTitle(value) {
     const title = normalizeDownloadTitle(value);
-    return !title || /^(?:P\s*\d+[_\-:：\s]*)?(?:哔哩哔哩|bilibili)(?:[_\-:：\s]*(?:哔哩哔哩|bilibili))*$/i.test(title) || /^(?:BV|av)\w+$/i.test(title);
+    return !title
+      || /^(?:P\s*\d+[_\-:：\s]*)?(?:哔哩哔哩|bilibili)(?:[_\-:：\s]*(?:哔哩哔哩|bilibili|视频|video))*$/i.test(title)
+      || /^(?:BV|av)\w+$/i.test(title);
   }
   function isGenericDownloadPart(value) {
     return /^(?:P\s*\d+|第\s*\d+\s*[P集期]|C\s*\d+(?:\s*[_-]\s*P\s*\d+)?|E\s*\d+|S\s*\d+\s*E\s*\d+)$/i.test(normalizeDownloadTitle(value));
@@ -900,6 +902,19 @@
     }
     return { data, returnedId };
   }
+  function downloadPageNeedsViewMetadata(page) {
+    return isGenericDownloadTitle(page?.title)
+      || !!page?.filenameTitle && isGenericDownloadTitle(page.filenameTitle);
+  }
+  function downloadViewOwnerName(data, fallback = "") {
+    return selectDownloadAuthor(
+      data?.owner?.name,
+      data?.owner?.uname,
+      data?.author,
+      data?.up_name,
+      fallback
+    );
+  }
   function normalizeBangumiDuration(value) {
     const number = Math.max(0, Number(value) || 0);
     return number > 10000 ? number / 1000 : number;
@@ -1057,6 +1072,8 @@
     const pageItems = Array.isArray(data?.pages) && data.pages.length
       ? data.pages
       : data?.cid ? [{ page: basePage.page, cid: data.cid, part: `P${basePage.page}` }] : [];
+    const officialTitle = selectDownloadTitle(data?.title, basePage?.title) || "Bilibili 视频";
+    const officialOwnerName = downloadViewOwnerName(data, basePage?.ownerName);
     const viewEntries = pageItems.map((item, index) => ({
       videoId: returnedId || basePage.videoId,
       bvid: normalizedDownloadBvid(data?.bvid) || basePage.bvid,
@@ -1064,7 +1081,9 @@
       page: Number(item?.page) || index + 1,
       cid: String(item?.cid || ""),
       part: item?.part || `P${Number(item?.page) || index + 1}`,
-      title: basePage.title,
+      title: officialTitle,
+      filenameTitle: officialTitle,
+      ownerName: officialOwnerName,
       duration: Number(item?.duration) || 0,
       durationLabel: formatDownloadEpisodeDuration(item?.duration),
       source: "view"
@@ -1087,6 +1106,7 @@
         pages: episode?.pages,
         title: episode?.title || arc?.title || episodePage?.part,
         part: episodePage?.part || episode?.title || arc?.title,
+        ownerName: downloadViewOwnerName(episode?.owner || arc?.owner || data?.owner, data?.author),
         duration: episodePage?.duration || episode?.duration || episode?.duration_seconds,
         current: downloadVideoIdentityMatches(episode?.bvid || arc?.bvid, episode?.aid || arc?.aid, basePage.videoId, basePage.aid),
         source: "view"
@@ -1163,6 +1183,7 @@
       cid: String(entry?.cid || "").match(/^\d+$/)?.[0] || "",
       part: normalizeDownloadTitle(entry?.part || entry?.title || `P${page}`) || `P${page}`,
       title: selectDownloadTitle(entry?.title, basePage?.title) || "Bilibili 视频",
+      filenameTitle: selectDownloadTitle(entry?.filenameTitle, entry?.title, basePage?.filenameTitle, basePage?.title) || "Bilibili 视频",
       ownerName: selectDownloadAuthor(entry?.ownerName, basePage?.ownerName),
       musicTitle: selectDownloadTitle(entry?.musicTitle, basePage?.musicTitle),
       artist: selectDownloadAuthor(entry?.artist, basePage?.artist),
@@ -2469,12 +2490,12 @@
       aid: page.aid || request.aid || responseAid,
       cid: String(page.cid),
       page: Number(page.page) || 1,
-      title: page.title,
-      part: page.part,
-      ownerName: page.ownerName,
+      title: selectDownloadTitle(page.title, responseArc.title, data?.title) || page.title,
+      part: selectDownloadPart(page.part, responseArc.part, data?.part),
+      ownerName: downloadViewOwnerName(data, page.ownerName),
       musicTitle: page.musicTitle,
       artist: page.artist,
-      filenameTitle: page.filenameTitle || page.seasonTitle || page.title,
+      filenameTitle: selectDownloadTitle(page.filenameTitle, page.seasonTitle, page.title, responseArc.title, data?.title) || page.filenameTitle || page.seasonTitle || page.title,
         downloadScope: isBangumi ? "bangumi" : "episodes",
         seasonId: page.seasonId || request.seasonId || responseSeasonId,
         epId: page.epId || request.epId || responseEpId,
@@ -2527,7 +2548,10 @@
     if (inDrawer) postDrawer("bk-drawer-download-fetch-status", { state: status, message: String(message || "").slice(0, 180) });
   }
   async function resolveDownloadPageForFetch(page, signal) {
-    if (page.cid && page.downloadScope !== "bangumi") return page;
+    // 快速 BV 入口会先从 view 目录拿到 CID，但标题/作者仍是入口占位值。
+    // 只有正式元数据已经存在时才可以直接复用 CID；否则继续读取同一个
+    // 官方 view 响应，避免工作台和文件名停留在“Bilibili 视频/未知作者”。
+    if (page.cid && page.downloadScope !== "bangumi" && !downloadPageNeedsViewMetadata(page)) return page;
     if (page.downloadScope === "bangumi") {
       if (!page.epId && !page.seasonId && !page.videoId && !page.cid) throw new Error("当前番剧缺少可识别的集或季 ID");
       const data = await fetchDownloadBangumiSeasonData(page, signal);
@@ -2557,33 +2581,20 @@
       };
     }
     if (!page.videoId) throw new Error("当前页面没有可识别的视频 ID");
-    const viewUrl = new URL("https://api.bilibili.com/x/web-interface/view");
-    if (page.bvid) viewUrl.searchParams.set("bvid", page.bvid);
-    else {
-      const aid = page.aid || String(page.videoId || "").match(/^av(\d+)$/)?.[1] || "";
-      if (!aid) throw new Error("当前视频的 AV ID 不可用");
-      viewUrl.searchParams.set("aid", aid);
-    }
-    const response = await downloadRequestJson(viewUrl.href, { signal });
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch {
-      throw new Error(`视频信息接口 HTTP ${response.status}`);
-    }
-    if (!response.ok) throw new Error(`视频信息接口 HTTP ${response.status}`);
-    if (Number(payload?.code) !== 0 || !payload?.data) {
-      throw new Error(`视频信息接口返回 ${Number(payload?.code) || "未知错误"}`);
-    }
-    const data = payload.data;
+    const { data, returnedId: returnedVideoId } = await fetchDownloadViewData(page, signal);
     const returnedBvid = normalizedDownloadBvid(data.bvid);
     const returnedAid = normalizedDownloadAid(data.aid);
-    const returnedVideoId = normalizedDownloadVideoId(returnedBvid || (returnedAid ? `av${returnedAid}` : ""));
     if (returnedVideoId && !downloadVideoIdentityMatches(page.videoId, page.aid, returnedVideoId, returnedAid)) {
       throw new Error("视频信息与当前 URL 不一致");
     }
     const pages = Array.isArray(data.pages) ? data.pages : [];
-    const explicitPage = parseDownloadPageUrl().page;
+    const urlIdentity = parseDownloadPageUrl();
+    // 快速下载可以在另一个视频页上输入目标 BV。只有当前 URL 与目标
+    // 视频身份一致时，才使用 URL 中的 p 参数；否则应从目标视频的
+    // view 响应选择默认分 P，避免误用当前页面的 p=2 等参数。
+    const explicitPage = urlIdentity.videoId && downloadPageIdentityMatches(page, urlIdentity.videoId, urlIdentity.aid)
+      ? urlIdentity.page
+      : 0;
     const statePage = page.stateMatchesUrl ? Number(page.page) || 0 : 0;
     const wantedPage = explicitPage || statePage;
     let selected = wantedPage > 0 ? pages.find((item) => Number(item.page) === wantedPage) : null;
@@ -2597,6 +2608,11 @@
       videoId: page.videoId || returnedVideoId,
       cid,
       page: Number(selected?.page) || wantedPage || 1,
+      title: selectDownloadTitle(data.title, page.title) || page.title,
+      filenameTitle: selectDownloadTitle(data.title, page.filenameTitle, page.title) || page.filenameTitle || page.title,
+      part: selectDownloadPart(selected?.part, page.part),
+      ownerName: downloadViewOwnerName(data, page.ownerName),
+      duration: Number(selected?.duration || data.duration) || Number(page.duration) || 0,
       aid: String(data.aid || page.aid || "").match(/^\d+$/)?.[0] || page.aid || ""
     };
   }
@@ -3924,6 +3940,7 @@
       cid: String(entry.cid || ""),
       page: Math.max(1, Number(entry.page) || 1),
       title: selectDownloadTitle(basePage.title, entry.title) || basePage.title,
+      filenameTitle: selectDownloadTitle(entry.filenameTitle, entry.title, basePage.filenameTitle, basePage.title) || basePage.filenameTitle || basePage.title,
       part: selectDownloadPart(entry.part, basePage.part),
       ownerName: selectDownloadAuthor(entry.ownerName, basePage.ownerName),
       musicTitle: selectDownloadTitle(entry.musicTitle, basePage.musicTitle),
@@ -4041,7 +4058,9 @@
       aid: normalizedDownloadAid(data.aid) || page.aid,
       cid,
       title: officialTitle,
+      filenameTitle: selectDownloadTitle(data.title, page.filenameTitle, page.title, officialTitle) || officialTitle,
       part: selectDownloadPart(selectedPage?.part, page.part, entry.part),
+      ownerName: downloadViewOwnerName(data, page.ownerName),
       duration: Number(selectedPage?.duration || data.duration) || page.duration
     };
   }
@@ -4304,6 +4323,7 @@
     root.__bkDispose = () => {
       window.removeEventListener(BILIKIT_THEME_EVENT, syncTheme);
       try { root.__bkCatalogController?.abort("工作台已关闭"); } catch {}
+      try { root.__bkTrackController?.abort("工作台已关闭"); } catch {}
     };
     syncTheme();
     window.addEventListener(BILIKIT_THEME_EVENT, syncTheme);
@@ -4502,7 +4522,7 @@
       wrap.append(text, select);
       return { wrap, select };
     };
-    const qualityOptions = [];
+    let qualityOptions = [];
     const seenQualities = new Set();
     for (const track of model.videos) {
       const key = String(track.id);
@@ -4572,6 +4592,7 @@
     };
     const retryButton = makeAction("重新获取轨道", false, () => {
       if (inDrawer) postFrameCommand("bk-drawer-download-retry");
+      else if (DOWNLOAD_WORKSPACE_ROOT?.__bkFetchDownloadTracks) void DOWNLOAD_WORKSPACE_ROOT.__bkFetchDownloadTracks();
       else void fetchCurrentDownloadPlayinfo(true);
     });
     retryButton.dataset.bkDownloadRetry = "";
@@ -4617,6 +4638,48 @@
       separateButton.disabled = !selectedVideo() || !selectedAudio();
       audioOnlyButton.disabled = !selectedAudio();
     };
+    const refreshTrackSelectors = () => {
+      qualityOptions = [];
+      const seen = new Set();
+      for (const track of model.videos) {
+        const key = String(track.id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        qualityOptions.push({ ...track, optionLabel: track.qualityLabel || `画质 ${key}` });
+      }
+      qualityControl.select.replaceChildren();
+      qualityControl.select.disabled = !qualityOptions.length;
+      if (!qualityOptions.length) {
+        const option = document.createElement("option");
+        option.textContent = "当前页面没有可用视频轨";
+        qualityControl.select.appendChild(option);
+      } else {
+        qualityOptions.forEach((track, index) => {
+          const option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = track.optionLabel;
+          qualityControl.select.appendChild(option);
+        });
+        const preferred = qualityOptions.findIndex((track) => String(track.id) === String(model.quality));
+        qualityControl.select.value = String(preferred >= 0 ? preferred : 0);
+      }
+      audioControl.select.replaceChildren();
+      audioControl.select.disabled = !model.audios.length;
+      if (!model.audios.length) {
+        const option = document.createElement("option");
+        option.textContent = "当前页面没有可用音频轨";
+        audioControl.select.appendChild(option);
+      } else {
+        model.audios.forEach((track, index) => {
+          const option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = track.optionLabel || downloadTrackLabel(track);
+          audioControl.select.appendChild(option);
+        });
+      }
+      refreshCodecOptions();
+      refreshMergeButton();
+    };
     const refreshVideoList = (preserveSelection = true) => {
       const previous = videoListState.selected;
       videoListState.entries = buildDownloadVideoList(sourceCatalog, sourceCollection, model);
@@ -4627,6 +4690,17 @@
       const current = videoListState.entries.find((entry) => entry.current);
       videoListState.selected = new Set((keep.length ? keep : current ? [current] : []).map((entry) => entry.listKey));
       refreshList();
+    };
+    root.__bkApplyDownloadSnapshot = (snapshot) => {
+      const next = normalizeDownloadSnapshot(snapshot);
+      if (!next) return false;
+      Object.assign(model, next);
+      root.dataset.bkVideoTrackCount = String(model.videos.length);
+      root.dataset.bkAudioTrackCount = String(model.audios.length);
+      videoTitle.textContent = model.title;
+      refreshTrackSelectors();
+      refreshVideoList(true);
+      return true;
     };
     root.__bkRefreshDownloadCatalog = (entries) => {
       sourceCatalog = Array.isArray(entries) ? entries.slice() : [];

@@ -8,7 +8,7 @@ BiliKit Performance 是运行在 Edge/Chromium 浏览器中的 Bilibili userscri
 
 - 仓库：<https://github.com/ct-yx/BiliKit-Performance>
 - 默认分支：`main`
-- 当前版本：`0.7.1`
+- 当前版本：`0.7.2`
 - 发布入口：`bilikit-performance.user.js`
 - 原始安装地址：<https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js>
 - 本文档创建前的基线提交：`32036b15c0ef9efbde6fdb9c65ea869b640fdfe4`
@@ -72,11 +72,13 @@ Worker 通过 `DOWNLOAD_WORKER_SOURCE` 标记内嵌到 userscript。标记数量
 - 仅在 `space.bilibili.com/<mid>/favlist` 页面运行。
 - 通过公开官方元数据和受限的公开兜底来源恢复可确认的失效收藏卡片信息。
 - 不把私密收藏、无法确认的懒加载缺失条目或第三方返回的占位数据伪造成真实数据。
+- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()`，输出包含 BVID/AID、标题、分 P/CID、时长、UP 主和 `source: "public"` 的标准目录，供后续批量下载使用；当前版本不自动下载整个收藏夹。
 - 缓存键为 `bilikit:favorites-fix:v1`，不保存 Cookie、签名 URL、媒体 URL 或第三方脚本代码。
 
 ### 下载工作台
 
-- 从播放器右键菜单打开；默认当前 BVID/CID 和当前分 P。
+- 可从播放器右键菜单打开，也可从 Bilibili 顶栏“下载”入口输入 BV 号打开；顶栏空间不足时入口会降级到 BiliKit 设置按钮上方的悬浮按钮。默认当前 BVID/CID 和当前分 P。
+- 顶栏快速入口只接受完整 BV 号或 BV 后的字母数字正文；非当前播放页的 BV 会通过官方 `view` / `playurl` 接口主动获取 CID、分 P 和 DASH 音视频轨道。
 - 普通视频支持同 BV 多 P、合集多 BV 和混合批量；番剧使用独立的季度/正片目录和官方播放接口。
 - 支持合并 MP4、分别下载视频/音频轨和仅下载音频。
 - MP4 合并是直通重封装，不重新编码；仅在点击合并时创建内嵌 Worker。
@@ -196,6 +198,7 @@ git diff --check
 - 下载只处理当前页面已识别出的分 P、合集条目或番剧正片。
 - 签名媒体地址只存在于当前页面内存，刷新或切页后需要重新捕获/请求。
 - Bilibili 页面结构、官方接口、播放签名和 CDN 行为变化时，需要重新做页面回归。
+- “更新跳转”设置可以关闭脚本更新后在新标签页打开 Pages 更新日志；当前 Bilibili 页面会保留，关闭后待处理版本状态仍保留，重新开启后在下一次回到首页时处理。
 - Global Speed 联动不是本项目当前职责。
 - 浏览器下载管理器、网络节点和登录态会影响真实下载结果，不能只凭脚本日志判断保存成功。
 - 历史扩展版本的问题不应通过恢复扩展代码来修复；如果以后重新考虑扩展，需要单独定义兼容层、权限、生命周期和性能验收标准。

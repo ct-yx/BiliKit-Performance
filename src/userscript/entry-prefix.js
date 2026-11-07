@@ -6472,6 +6472,65 @@
     if (!privateResult) throw new Error("公开和鉴权收藏夹接口都没有返回可用数据");
     return { source: "private", info: privateResult.info, medias: privateResult.medias, canRecoverHidden: false };
   }
+  function favoritesFixDownloadEntry(raw, index = 0) {
+    const media = favoritesFixNormalizeMedia(raw, index);
+    const pages = favoritesFixNormalizePages(media.pages);
+    const title = favoritesFixTitle(media) || favoritesFixString(media.title, 800) || favoritesFixDisplayTitle(media);
+    const firstPage = pages[0] || {};
+    return {
+      bvid: media.bvid,
+      aid: media.aid,
+      title,
+      part: firstPage.title || "",
+      cid: String(firstPage.cid || ""),
+      pages,
+      duration: media.duration,
+      ownerName: media.upper?.name || "",
+      source: "public",
+      index: index + 1,
+      url: media.bvid || media.aid ? `https://www.bilibili.com/video/${media.bvid || `av${media.aid}`}/` : ""
+    };
+  }
+  async function favoritesFixGetPublicEntries(options = {}) {
+    const current = favoritesFixResolveInfo();
+    const fid = String(options.fid || current.fid || "").match(/^\d+$/)?.[0] || "";
+    if (!fid) throw new Error("当前页面没有可识别的公开收藏夹 ID");
+    const info = {
+      ...current,
+      fid,
+      keyword: "",
+      type: "0",
+      tid: "0",
+      order: String(options.order || current.order || "mtime")
+    };
+    const all = options.all !== false;
+    const pageSize = Math.max(20, Math.min(40, Math.floor(Number(options.pageSize) || 40)));
+    const output = [];
+    const seen = new Set();
+    let page = 1;
+    let totalHint = 0;
+    for (let requestCount = 0; requestCount < 100; requestCount += 1, page += 1) {
+      const payload = await favoritesFixRequestJson(
+        favoritesFixApiUrl("/medialist/gateway/base/spaceDetail", info, page, pageSize),
+        "收藏夹公开接口",
+        8000
+      );
+      const parsed = favoritesFixParseApiResponse(payload);
+      if (!parsed) throw new Error("收藏夹公开接口没有返回可用数据");
+      totalHint = Number(parsed.info?.media_count || parsed.info?.count || parsed.info?.total || totalHint) || totalHint;
+      if (!parsed.medias.length) break;
+      let added = 0;
+      for (const media of parsed.medias) {
+        const key = favoritesFixKey(media);
+        if (key && seen.has(key)) continue;
+        if (key) seen.add(key);
+        output.push(media);
+        added += 1;
+      }
+      if (!all || totalHint && output.length >= totalHint || !added) break;
+    }
+    return output.map((media, index) => favoritesFixDownloadEntry(media, index)).filter((entry) => entry.bvid || entry.aid);
+  }
   function favoritesFixResolveInfo() {
     const info = parseFavoritesFixUrl(location.href);
     if (info.fid) return info;
@@ -7223,7 +7282,11 @@
     if (document.readyState === "loading") runtime.listen(document, "DOMContentLoaded", () => { attachObserver(); schedule(); }, { once: true });
     else { attachObserver(); schedule(); }
     favoritesFixRefreshStats();
-    window.__BILIKIT_FAVORITES_FIX_API__ = { refresh: () => schedule(true), clear: () => { localStorage.removeItem(FAVORITES_FIX_CACHE_KEY); schedule(true); } };
+    window.__BILIKIT_FAVORITES_FIX_API__ = {
+      refresh: () => schedule(true),
+      clear: () => { localStorage.removeItem(FAVORITES_FIX_CACHE_KEY); schedule(true); },
+      getEntries: (options = {}) => favoritesFixGetPublicEntries(options)
+    };
   }
   const favoritesFix = {
     id: "favorites-fix",
@@ -7952,28 +8015,87 @@
       frame.style.display = "none";
     }
     downloadWorkspaceMode = true;
-    const basePage = isPlayPage() ? currentDownloadPageIdentity() : {
+    const currentPage = isPlayPage() ? currentDownloadPageIdentity() : null;
+    const useCurrentPage = !!currentPage && (!model.videoId || downloadVideoIdentityMatches(
+      model.videoId,
+      model.aid,
+      currentPage.videoId,
+      currentPage.aid
+    ));
+    const basePage = useCurrentPage ? currentPage : {
       videoId: model.videoId,
       bvid: model.bvid,
       aid: model.aid,
       cid: model.cid,
       page: model.page,
       title: model.title,
+      part: model.part,
+      filenameTitle: model.filenameTitle,
+      ownerName: model.ownerName,
       duration: model.duration,
       routeKey: model.routeKey || `${model.videoId}|p=${model.page}|cid=${model.cid}`,
       stateMatchesUrl: true,
       urlVideoId: model.videoId,
       requiresCid: false
     };
+    // 目标 BV 可能与当前播放页不同；此时当前页面 DOM 中的分 P/合集目录
+    // 属于另一个视频，不能先混入工作台，等待目标 BV 的官方 view 响应刷新目录。
     const initialCatalog = Array.isArray(catalog) && catalog.length
       ? catalog
-      : readDownloadEpisodeCatalogFromDom(basePage);
+      : useCurrentPage
+        ? readDownloadEpisodeCatalogFromDom(basePage)
+        : [];
     const initialCollection = Array.isArray(collection) && collection.length
       ? collection
-      : readDownloadCollectionCatalog(basePage);
+      : useCurrentPage
+        ? readDownloadCollectionCatalog(basePage)
+        : [];
     downloadWorkspaceRoot = createUnifiedDownloadWorkspace(model, initialCatalog, initialCollection);
     const catalogController = new AbortController();
     downloadWorkspaceRoot.__bkCatalogController = catalogController;
+    const directTrackFetch = !useCurrentPage;
+    const loadDirectTracks = async () => {
+      const root = downloadWorkspaceRoot;
+      if (!directTrackFetch || !root?.isConnected) return null;
+      root.__bkTrackController?.abort("新的轨道请求已开始");
+      const controller = new AbortController();
+      root.__bkTrackController = controller;
+      updateDownloadWorkspaceFetchStatus({ state: "loading", message: "正在从 B 站播放接口获取当前视频的 DASH 音视频轨…" });
+      try {
+        const selected = root.__bkDownloadVideoListState?.entries?.find((entry) => entry.current)
+          || root.__bkDownloadVideoListState?.entries?.[0];
+        const page = {
+          ...basePage,
+          videoId: selected?.videoId || selected?.bvid || basePage.videoId,
+          bvid: selected?.bvid || basePage.bvid,
+          aid: selected?.aid || basePage.aid,
+          cid: selected?.cid || basePage.cid,
+          page: selected?.page || basePage.page,
+          title: selected?.title || basePage.title,
+          filenameTitle: selected?.filenameTitle || basePage.filenameTitle,
+          part: selected?.part || basePage.part,
+          ownerName: selected?.ownerName || basePage.ownerName,
+          duration: selected?.duration || basePage.duration,
+          routeKey: basePage.routeKey || `quick-bvid:${basePage.videoId}`,
+          stateMatchesUrl: false,
+          urlVideoId: ""
+        };
+        const resolved = await resolveDownloadPageForFetch(page, controller.signal);
+        const result = await fetchBatchDownloadSnapshot(resolved, controller.signal);
+        if (controller.signal.aborted || downloadWorkspaceRoot !== root || !root.isConnected) return null;
+        root.__bkApplyDownloadSnapshot?.(result.snapshot);
+        updateDownloadWorkspaceFetchStatus({ state: "success", message: "已获取当前视频的 DASH 音视频轨" });
+        return result.snapshot;
+      } catch (error) {
+        if (controller.signal.aborted || downloadWorkspaceRoot !== root || !root.isConnected) return null;
+        const message = downloadActiveErrorMessage(error);
+        updateDownloadWorkspaceFetchStatus({ state: "error", message });
+        return null;
+      } finally {
+        if (root.__bkTrackController === controller) root.__bkTrackController = null;
+      }
+    };
+    downloadWorkspaceRoot.__bkFetchDownloadTracks = loadDirectTracks;
     panel.appendChild(downloadWorkspaceRoot);
     panel.classList.add("download-mode");
     panel.classList.remove("parked");
@@ -7991,6 +8113,7 @@
       if (!downloadWorkspaceRoot?.isConnected || downloadWorkspaceRoot.__bkCatalogController !== catalogController) return;
       downloadWorkspaceRoot.__bkRefreshDownloadCatalog?.(bundle?.catalog || []);
       downloadWorkspaceRoot.__bkRefreshDownloadCollection?.(bundle?.collection || []);
+      if (directTrackFetch && !model.videos.length && !model.audios.length) void loadDirectTracks();
     });
   }
   window.__BILIKIT_OPEN_DOWNLOAD_WORKSPACE__ = openDownloadWorkspace;

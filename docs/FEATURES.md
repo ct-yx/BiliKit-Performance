@@ -1,16 +1,18 @@
 # BiliKit Performance 功能介绍
 
-当前版本：**0.7.2**
+当前版本：**0.7.3**
 
-BiliKit Performance 是面向 Edge / Chromium 的 Bilibili userscript，主要提供首页与 CDN 优化、播放交互增强、播放器下载工作台，以及收藏夹失效视频修复。详细实现以当前发布脚本为准：[bilikit-performance.user.js](../bilikit-performance.user.js)。
+BiliKit Performance 是面向 Edge / Chromium 的 Bilibili userscript，主要提供播放交互、播放器下载工作台、收藏夹失效视频修复和桌面端首页信息流增强。详细实现以当前发布脚本为准：[bilikit-performance.user.js](../bilikit-performance.user.js)。
 
 ## 首页、搜索和 CDN
 
-- 首页在页面早期预连接常用接口和图片域名，调整推荐、播放和图片资源的请求优先级。
-- 预加载首屏附近的封面，并按设置在真实下滑后停止约 3 秒时触发 B 站原生首页加载；每次停留周期最多进行 3 次探测，继续实际滚动后重新计数，不改写视频悬停预览。
-- 隐藏首页信息流广告楼层，修复部分信息流网格间距造成的错位和抖动。
-- 搜索页只处理连接和已知接口 URL 问题，搜索结果与悬停预览继续使用 B 站原生逻辑。
-- 根据网络地区和实际探测结果选择图片、播放资源的 CDN；对带签名的代理地址保留安全边界，不伪造 MCDN 签名。
+- 首页保留 B 站原生卡片排布、展示位、推荐顺序和滚动加载，不接管横向列数、纵向行数，也不使用 CSS Grid 重排。
+- 首页只做小范围优化：广告删除、封面预加载、图片节点优化、请求预连接和原生布局稳定性保护；脚本保留 B 站原生列数/行数，只在网格直接卡片上清除额外上边距，不写入卡片布局属性，相关资源优化可以在设置中独立关闭。
+- 停止滚动后的自动加载只协调 B 站原生入口，不自行渲染接口结果、不克隆卡片、不伪造 scroll 事件，并在检测到 BiliKit Feed 时让路。
+- 首页与搜索页封面预览直接由 Performance 提供，真视频模式使用 B 站播放接口获取静音低清地址并在悬停时播放，动态追加卡片自动接入；不依赖 BiliKit Feed。
+- 首页诊断接口包括 `window.__BILIKIT_HOME_FEED_STATS__`、`window.__BILIKIT_HOME_FEED_COORDINATOR_STATS__`、`window.__BILIKIT_HOME_FEED_PRIORITY_STATS__`、`window.__BILIKIT_HOME_AUTO_LOAD_STATS__`、`window.__BILIKIT_HOME_LAYOUT_STATS__` 和 `window.__BILIKIT_HOME_AD_STATS__`。
+- 搜索页只保留独立的连接和已知接口 URL 处理，搜索结果与悬停预览继续使用 B 站原生逻辑。
+- CDN 优选当前只处理播放资源和悬停预览的精确 `playurl` 响应，不伪造 MCDN 签名。
 
 ## 播放交互
 
@@ -18,6 +20,8 @@ BiliKit Performance 是面向 Edge / Chromium 的 Bilibili userscript，主要�
 - 播放页提供“回程”能力，可返回上一个视频并按设置恢复播放进度。
 - 正式播放时可申请 Screen Wake Lock，减少设备自动休眠；悬停预览不会申请唤醒锁。
 - “稍后再看”“不感兴趣”和“更多”等原生操作继续交给 B 站处理。
+- 免登录模块可以分别关闭评论区或 1080p；播放首请求会等待 WBI 密钥后再重签名，失败时保留 B 站原始请求。
+- 评论链接识别模块会把 Unicode Emoji、B 站表情图片和表情资源路径视为拆分分隔符，识别合法 HTTPS 链接并提供新标签页按钮。
 
 ## 播放器下载工作台
 
@@ -76,10 +80,11 @@ BiliKit Performance 是面向 Edge / Chromium 的 Bilibili userscript，主要�
 - 仍使用失效占位封面的目标卡片支持悬停或键盘聚焦资料面板，面板固定在视口内并内部滚动，不改变卡片尺寸，也不拦截 B 站原生跳转。
 - 正常收藏卡片不会被改写、插入工具菜单或增加资料面板；隐藏条目只有在官方公开接口明确确认时才按原顺序补回。
 - 本地缓存只保存公开元数据和有限时间的命中状态，不保存 Cookie、签名 URL、媒体地址或第三方脚本内容。
-- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()` 标准目录接口，返回 BVID/AID、标题、分 P/CID、时长、UP 主和 `source: "public"`，为后续批量下载做准备；当前版本不自动下载整个收藏夹。
+- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()` 标准目录接口，返回 BVID/AID、标题、分 P/CID、时长、UP 主和 `source: "public"`；页面右下角的“打开收藏下载”入口会把该目录交给现有下载工作台。
+- 收藏下载只处理公开收藏夹，保留收藏顺序，支持单 P、多 P 和多 BV 选择；每个任务按自己的 BVID/CID 重新读取官方 `view` / `playurl`，失败项可在任务列表中重试。可在“收藏夹修复”设置中关闭该入口。
 
 ## 设置与限制
 
-设置面板按模块控制首页加载、CDN、主题、回程、防睡眠、收藏夹修复、下载工作台和更新跳转。更新跳转模块可以关闭脚本更新后在新标签页打开 Pages 更新日志，并保留当前 Bilibili 页面；下载工作台可分别控制摘要、总速度、综合进度、文件大小、任务阶段进度、刷新间隔和合并估算样本阈值。
+首页加载设置位于设置面板中，可分别关闭广告删除、封面预加载和原生自动加载，或调整预加载/自动加载的目标行数；卡片列数、行数和展示位由 B 站原生逻辑决定。
 
 脚本不绕过登录、会员、付费、DRM、地区限制或其他访问控制；官方接口或媒体资源不可访问时，会保留失败提示，不伪造数据。下载功能只针对当前页面识别出的同 BV 分 P、合集条目或番剧正片，不处理推荐列表中与当前视频无关的项目。

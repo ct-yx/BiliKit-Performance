@@ -270,6 +270,7 @@
       collectionTitle: normalizeDownloadTitle(source.collectionTitle),
       collectionItemTitle: normalizeDownloadTitle(source.collectionItemTitle),
       collectionRootTitle: normalizeDownloadTitle(source.collectionRootTitle),
+      favoritesMode: source.favoritesMode === true,
       videoId,
       bvid,
       aid: normalizedDownloadAid(source.aid || String(videoId || "").match(/^av(\d+)$/i)?.[1]),
@@ -705,6 +706,7 @@
       durationLabel: String(entry?.durationLabel || formatDownloadEpisodeDuration(duration)),
       source: String(entry?.source || "state"),
       collectionExpanded: entry?.collectionExpanded === true,
+      favoritesMode: entry?.favoritesMode === true,
       // 只有明确的 BV/AV 条目才会进入统一合集列表；当前标记还必须落到
       // 当前 CID/分 P，不能因为同一 BV 下有多个 P 就把它们全标成当前项。
       current: !!entry?.current && (!basePage?.cid || !cid || sameCid) ||
@@ -1117,6 +1119,14 @@
     return confirmed.length ? expandDownloadCollectionCatalog(confirmed, basePage) : [];
   }
   async function fetchDownloadCatalogBundle(basePage, signal, domEntries = [], domCollection = []) {
+    if (basePage?.favoritesMode) {
+      // 公开收藏夹已经提供完整的跨 BV 目录；不能再用第一个 BV 的 view
+      // 响应覆盖整个收藏夹。每个选中项在批量任务开始时单独解析自己的 view/CID。
+      return {
+        catalog: (domEntries || []).map((entry) => normalizeDownloadCatalogEntry(entry, basePage)),
+        collection: Array.isArray(domCollection) ? domCollection.slice() : []
+      };
+    }
     if (basePage?.downloadScope === "bangumi") {
       const fallbackCatalog = (domEntries || []).map((entry, index) => normalizeDownloadBangumiEntry(entry, basePage, index));
       try {
@@ -1190,7 +1200,8 @@
       duration,
       durationLabel: String(entry?.durationLabel || formatDownloadEpisodeDuration(duration)),
       source: String(entry?.source || "view"),
-      cidMismatch: !!entry?.cidMismatch
+      cidMismatch: !!entry?.cidMismatch,
+      cidCorrected: !!entry?.cidCorrected
     };
   }
   function mergeDownloadEpisodeCatalog(domEntries, viewEntries, basePage) {
@@ -1206,12 +1217,18 @@
       byPage.set(normalized.page, {
         ...previous,
         ...normalized,
-        cid: normalized.cid || previous?.cid || "",
+        // 官方条目已存在时不回退到旧 DOM CID；缺少官方 CID 就保持待获取/无效，
+        // 避免把旧目录中的 CID 带入另一个 P。
+        cid: normalized.cid || "",
         part: normalized.part || previous?.part || `P${normalized.page}`,
         duration: normalized.duration || previous?.duration || 0,
         durationLabel: normalized.duration ? normalized.durationLabel : previous?.durationLabel || "时长未知",
         source: "view",
-        cidMismatch
+        // 官方 view 的 pages 是当前 BV 的权威 page→CID 映射。
+        // DOM 目录可能来自旧播放器状态或旧缓存；官方 CID 已替换后可以安全下载，
+        // 只保留修正标记供界面诊断，不能再把条目禁用成“已跳过”。
+        cidMismatch: false,
+        cidCorrected: cidMismatch || !!previous?.cidCorrected
       });
     }
     if (!byPage.size) {
@@ -1388,7 +1405,10 @@
   function buildDownloadVideoList(catalog = [], collection = [], basePage = null) {
     const isBangumi = basePage?.downloadScope === "bangumi" || (Array.isArray(catalog) && catalog.some((entry) => entry?.downloadScope === "bangumi"));
     const preparedCollection = prepareDownloadCollectionCatalog(collection, catalog, basePage);
-    const confirmedCollection = confirmedDownloadCollectionCatalog(preparedCollection, basePage);
+    const favoritesMode = basePage?.favoritesMode === true || preparedCollection.some((entry) => entry?.favoritesMode === true);
+    const confirmedCollection = favoritesMode
+      ? preparedCollection.filter((entry) => entry?.videoId)
+      : confirmedDownloadCollectionCatalog(preparedCollection, basePage);
     const collectionEntries = confirmedCollection.length
       ? expandDownloadCollectionCatalog(confirmedCollection, basePage).map((entry) => ({
         ...entry,
@@ -3227,6 +3247,14 @@
     link.download = fileName;
     link.rel = "noopener";
     link.style.display = "none";
+    // B 站页面有全局点击路由。保存 Blob 的锚点不能把 click 冒泡出去，
+    // 否则站点可能把 blob:https://space.bilibili.com/<uuid> 当成站内地址，
+    // 重写成错误的 https://space.bilibili.comhttps://space.bilibili.com/<uuid>。
+    // 只停止传播，不阻止默认动作，确保浏览器仍执行 download 属性。
+    link.addEventListener("click", (event) => {
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }, { once: true });
     document.body?.appendChild(link);
     link.click();
     link.remove();
@@ -4413,7 +4441,7 @@
       const meta = document.createElement("span");
       meta.className = "bk-dw-episode-meta";
       const identity = entry.bvid || entry.videoId || (entry.aid ? `av${entry.aid}` : "未知视频");
-      meta.textContent = `${identity}${entry.cid ? ` · CID ${entry.cid}` : " · CID 待获取"}${entry.collectionPageCount > 1 ? ` · P${entry.page}` : ""}${entry.cidMismatch ? " · 目录 CID 不一致，已跳过" : ""}`;
+      meta.textContent = `${identity}${entry.cid ? ` · CID ${entry.cid}` : " · CID 待获取"}${entry.collectionPageCount > 1 ? ` · P${entry.page}` : ""}${entry.cidCorrected ? " · 已按官方目录修正" : entry.cidMismatch ? " · 目录 CID 不一致，已跳过" : ""}`;
       main.append(entryTitle, meta);
       const duration = document.createElement("span");
       duration.className = "bk-dw-episode-duration";
@@ -4694,7 +4722,16 @@
     root.__bkApplyDownloadSnapshot = (snapshot) => {
       const next = normalizeDownloadSnapshot(snapshot);
       if (!next) return false;
+      const preserveFavoritesMode = model.favoritesMode === true || next.favoritesMode === true;
+      const preservedCollectionTitle = model.collectionTitle;
+      const preservedCollectionRootTitle = model.collectionRootTitle;
       Object.assign(model, next);
+      if (preserveFavoritesMode) {
+        model.favoritesMode = true;
+        model.downloadScope = "collection";
+        model.collectionTitle = next.collectionTitle || preservedCollectionTitle || "公开收藏夹";
+        model.collectionRootTitle = next.collectionRootTitle || preservedCollectionRootTitle || model.collectionTitle;
+      }
       root.dataset.bkVideoTrackCount = String(model.videos.length);
       root.dataset.bkAudioTrackCount = String(model.audios.length);
       videoTitle.textContent = model.title;

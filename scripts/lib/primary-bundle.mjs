@@ -11,6 +11,8 @@ const sourceParts = [
 ];
 const networkMarker = "  /* @bilikit-module:network-hooks */";
 const progressMarker = "  /* @bilikit-module:download-progress */";
+const previewStartMarker = "  /* @bilikit-module:home-cover-preview */";
+const previewEndMarker = "  /* @bilikit-module-end:home-cover-preview */";
 const workerPattern = /(^[ \t]*const DOWNLOAD_WORKER_SOURCE = )("(?:\\.|[^"])*")(;[ \t]*$)/m;
 
 export async function readUserscriptMetadata() {
@@ -46,7 +48,18 @@ export async function buildPrimaryBody({ workerPath = defaultWorkerPath, version
   const combined = parts.join("");
   if (combined.split(networkMarker).length !== 2) throw new Error("userscript 源码必须恰好包含一个 network-hooks 构建标记");
   if (combined.split(progressMarker).length !== 2) throw new Error("userscript 源码必须恰好包含一个 download-progress 构建标记");
-  const body = combined
+  const previewStart = combined.indexOf(previewStartMarker);
+  const previewEnd = combined.indexOf(previewEndMarker, previewStart + previewStartMarker.length);
+  if (previewStart < 0 || previewEnd < 0 || previewEnd <= previewStart) throw new Error("userscript 源码缺少 home-cover-preview 构建标记");
+  const previewBlock = combined.slice(previewStart, previewEnd + previewEndMarker.length);
+  const minifiedPreview = (await esbuild({
+    stdin: { contents: previewBlock, sourcefile: "home-cover-preview.js", loader: "js" },
+    minify: true,
+    target: "es2022",
+    write: false
+  })).outputFiles[0].text;
+  const compactCombined = combined.slice(0, previewStart) + minifiedPreview + combined.slice(previewEnd + previewEndMarker.length);
+  const body = compactCombined
     .replace(networkMarker, networkHookBundle)
     .replace(progressMarker, downloadProgressBundle)
     .replace(/const VERSION = "[^"]+";/, `const VERSION = ${JSON.stringify(version || "")};`);

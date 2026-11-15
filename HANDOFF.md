@@ -2,13 +2,13 @@
 
 ## 1. 项目定位
 
-BiliKit Performance 是运行在 Edge/Chromium 浏览器中的 Bilibili userscript，用于优化首页信息流、搜索页和播放页的网络调度与 CDN 使用，并在播放器右键菜单中提供下载工作台。
+BiliKit Performance 是运行在 Edge/Chromium 浏览器中的 Bilibili userscript，提供播放交互、下载工作台、收藏夹修复和桌面端首页信息流增强能力。
 
 当前维护范围只有 Tampermonkey 等 userscript 管理器中的脚本：
 
 - 仓库：<https://github.com/ct-yx/BiliKit-Performance>
 - 默认分支：`main`
-- 当前版本：`0.7.2`
+- 当前版本：`0.7.3`
 - 发布入口：`bilikit-performance.user.js`
 - 原始安装地址：<https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js>
 - 本文档创建前的基线提交：`32036b15c0ef9efbde6fdb9c65ea869b640fdfe4`
@@ -32,7 +32,7 @@ Edge 扩展已经从当前分支移除，不再作为本项目的开发目标：
 | 路径 | 职责 |
 | --- | --- |
 | `src/userscript/metadata.txt` | userscript 元数据、版本和权限声明；构建时原样作为文件头。 |
-| `src/userscript/entry-prefix.js` | 入口前段；运行时去重、document-start 预连接、首页请求优先级、配置、页面识别、网络与生命周期基础设施。 |
+| `src/userscript/entry-prefix.js` | 入口前段；运行时去重、页面识别、网络与生命周期基础设施，以及首页小范围资源/广告/原生加载优化。 |
 | `src/userscript/download-workspace.js` | 播放器下载工作台；播放响应捕获、视频/合集/番剧列表、身份校验、轨道请求、任务队列、文件名、音频元数据、保存和下载 UI。 |
 | `src/userscript/entry-suffix.js` | 入口后段；抽屉/新标签页导航、播放页交互、唤醒锁、收藏夹修复接入、设置 UI、模块初始化和跨抽屉消息。 |
 | `src/userscript/core/network-hooks.mjs` | `fetch`、XHR、History 等网络/导航钩子的可组合管理器。由构建器打包进 userscript。 |
@@ -41,7 +41,7 @@ Edge 扩展已经从当前分支移除，不再作为本项目的开发目标：
 | `scripts/lib/primary-bundle.mjs` | 拼接三个入口片段，内嵌两个核心模块和生成的 Worker。 |
 | `scripts/build-userscript.mjs` | 读取 metadata，生成根目录 userscript。 |
 | `scripts/build-remux-worker.mjs` | 使用 esbuild 构建并压缩根目录 Worker。 |
-| `scripts/test-*.mjs` | 构建、下载身份/请求/列表/文件名/生命周期/进度、首页加载、网络钩子和收藏夹修复测试。 |
+| `scripts/test-*.mjs` | 构建、下载身份/请求/列表/文件名/生命周期/进度、网络钩子和收藏夹修复测试。 |
 | `docs/FEATURES.md` | 面向使用者的功能说明；详细行为变化应同步更新。 |
 
 构建器通过两个明确标记注入模块：
@@ -55,24 +55,28 @@ Worker 通过 `DOWNLOAD_WORKER_SOURCE` 标记内嵌到 userscript。标记数量
 
 ### 首页与搜索页
 
-- 首页 document-start 阶段建立常用接口和图片域名的预连接，并调整首页相关请求优先级。
-- 首页 Feed 使用有限的观察和队列处理卡片、封面预加载、广告楼层隐藏、布局修复和真实下滑后的原生自动加载。
-- 自动加载只在用户真实下滑并停止后进行有限探测；没有新增内容时不会用无限重试把页面拖慢。
-- 搜索页单独处理预连接和已确认的接口 URL 问题，不把首页 Feed 规则强行套到搜索结果。
+- 首页继续使用 B 站原生卡片排布、横向列数、纵向行数、顶部展示位和滚动加载；脚本不使用 CSS Grid 接管布局，也不改写滚动位置。
+- 首页只保留小范围优化：稳定广告删除、封面预加载、图片节点优化、请求预连接、原生布局稳定性保护和有限的原生自动加载协调。布局保护器保留 B 站列数/行数，只对首页网格直接卡片注入清除额外上边距的作用域 CSS，并观察尺寸/属性变化等待稳定帧，不写入卡片布局属性。
+- 自动加载只通过 B 站真实入口工作；检测到 BiliKit Feed 时让路，找不到可靠原生入口时不强行注入。
+- 封面预览已合并进 Performance：只在首页和搜索页原生视频卡片上启用，真视频模式不再依赖 BiliKit Feed；设置中的雪碧图和关闭选项仍保留。
+- 可通过 `window.__BILIKIT_HOME_FEED_STATS__`、`window.__BILIKIT_HOME_FEED_COORDINATOR_STATS__`、`window.__BILIKIT_HOME_FEED_PRIORITY_STATS__`、`window.__BILIKIT_HOME_AUTO_LOAD_STATS__`、`window.__BILIKIT_HOME_LAYOUT_STATS__` 和 `window.__BILIKIT_HOME_AD_STATS__` 查看只读诊断。
+- 首页实现目前只覆盖桌面端；手机竖屏布局暂不接管。搜索页仍使用独立的预连接和接口 URL 处理，不套用首页规则。
 
 ### CDN 与播放页
 
-- 图片和播放资源分别处理；根据地域、缓存和失败回退选择节点。
+- 当前只对播放资源按地域、缓存和失败回退选择节点；首页图片优化由首页模块单独控制，不改写播放资源。
 - 只处理可确认的 Bilibili 播放响应和合法直连地址，不伪造签名、不改清晰度、不绕过访问控制。
 - 播放卡片支持抽屉、新标签页和当前页打开；播放页支持回程、网页全屏协作和正式播放时的 Screen Wake Lock。
 - 播放页生命周期必须随 SPA URL 和播放器状态清理旧监听器、旧轨道快照和旧任务引用。
+- 免登录模块提供独立的评论区和 1080p 开关；评论请求兼容 WBI/无 WBI 路径，播放首请求会等待 WBI 密钥后再重签名。
+- “评论链接识别”模块遍历评论 Shadow DOM，先移除识别用的 Unicode Emoji，再识别 B 站表情图片拆开的 HTTPS 链接，按钮默认通过已有 GM 打开 API 新建标签页。
 
 ### 收藏夹修复
 
 - 仅在 `space.bilibili.com/<mid>/favlist` 页面运行。
 - 通过公开官方元数据和受限的公开兜底来源恢复可确认的失效收藏卡片信息。
 - 不把私密收藏、无法确认的懒加载缺失条目或第三方返回的占位数据伪造成真实数据。
-- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()`，输出包含 BVID/AID、标题、分 P/CID、时长、UP 主和 `source: "public"` 的标准目录，供后续批量下载使用；当前版本不自动下载整个收藏夹。
+- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()`，输出包含 BVID/AID、标题、分 P/CID、时长、UP 主和 `source: "public"` 的标准目录。默认开启的“打开收藏下载”悬浮入口会把公开目录交给现有下载工作台；工作台保留收藏顺序，按单项 BVID/CID 获取轨道，支持多 P、批量选择和失败重试。可在“收藏夹修复”模块关闭 `batchDownload`。
 - 缓存键为 `bilikit:favorites-fix:v1`，不保存 Cookie、签名 URL、媒体 URL 或第三方脚本代码。
 
 ### 下载工作台
@@ -80,6 +84,7 @@ Worker 通过 `DOWNLOAD_WORKER_SOURCE` 标记内嵌到 userscript。标记数量
 - 可从播放器右键菜单打开，也可从 Bilibili 顶栏“下载”入口输入 BV 号打开；顶栏空间不足时入口会降级到 BiliKit 设置按钮上方的悬浮按钮。默认当前 BVID/CID 和当前分 P。
 - 顶栏快速入口只接受完整 BV 号或 BV 后的字母数字正文；非当前播放页的 BV 会通过官方 `view` / `playurl` 接口主动获取 CID、分 P 和 DASH 音视频轨道。
 - 普通视频支持同 BV 多 P、合集多 BV 和混合批量；番剧使用独立的季度/正片目录和官方播放接口。
+- 普通多 P 遇到旧播放器目录 CID 不一致时，以官方 `view.pages` 的 page→CID 映射为准；工作台保留“已按官方目录修正”提示并继续下载，官方没有 CID 的条目仍不可勾选。
 - 支持合并 MP4、分别下载视频/音频轨和仅下载音频。
 - MP4 合并是直通重封装，不重新编码；仅在点击合并时创建内嵌 Worker。
 - 每个任务独立校验 BVID/AV、CID、分 P、响应长度、轨道时长和当前页面身份，不能复用其他视频的签名地址。
@@ -163,7 +168,6 @@ npm run test:download-file-extension
 npm run test:download-audio
 npm run test:download-collection
 npm run test:download-bangumi
-npm run test:home-feed-auto-load
 npm run test:favorites-fix
 ```
 

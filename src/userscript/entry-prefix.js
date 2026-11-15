@@ -91,6 +91,126 @@
   // 请求优先级必须早于 B 站首页 bundle；函数声明会提升，匹配器已在上方初始化。
   // 该钩子只属于首页，不能在番剧/视频详情页 document-start 时提前接管 fetch/XHR。
   if (isHomeDocument()) installHomeFeedRequestPriority();
+  function getRuntimeCoordinator() {
+    const key = "__BILIKIT_PERFORMANCE_RUNTIME__";
+    const current = window[key];
+    if (current && !current.disposed) return current;
+    const cleanups = [];
+    const services = new Map();
+    const addGlobalCleanup = (cleanup) => trackCleanup(cleanups, cleanup);
+    const api = {
+      disposed: false,
+      installed: true,
+      addCleanup(cleanup) {
+        if (typeof cleanup !== "function") return () => {};
+        if (api.disposed) {
+          try { cleanup(); } catch {}
+          return () => {};
+        }
+        return trackCleanup(activeModuleCleanupScope || cleanups, cleanup);
+      },
+      addGlobalCleanup(cleanup) {
+        if (api.disposed) {
+          try { cleanup?.(); } catch {}
+          return () => {};
+        }
+        return addGlobalCleanup(cleanup);
+      },
+      listen(target, type, listener, options) {
+        target?.addEventListener?.(type, listener, options);
+        const untrack = api.addCleanup(() => target?.removeEventListener?.(type, listener, options));
+        return () => {
+          target?.removeEventListener?.(type, listener, options);
+          untrack();
+        };
+      },
+      createObserver(callback) {
+        if (typeof MutationObserver !== "function") return null;
+        const nativeObserver = new MutationObserver(callback);
+        const untrack = api.addCleanup(() => nativeObserver.disconnect());
+        return {
+          observe: (...args) => nativeObserver.observe(...args),
+          disconnect: () => nativeObserver.disconnect(),
+          disconnectAndForget: () => {
+            nativeObserver.disconnect();
+            untrack();
+          }
+        };
+      },
+      timeout(callback, delay) {
+        let active = true;
+        let untrack = () => {};
+        let timer = setTimeout(() => {
+          active = false;
+          untrack();
+          callback();
+        }, delay);
+        const cancel = () => {
+          if (!active) return;
+          active = false;
+          clearTimeout(timer);
+          timer = 0;
+          untrack();
+        };
+        untrack = api.addCleanup(cancel);
+        return { cancel };
+      },
+      frame(callback) {
+        let active = true;
+        let untrack = () => {};
+        const frame = requestAnimationFrame((time) => {
+          active = false;
+          untrack();
+          callback(time);
+        });
+        const cancel = () => {
+          if (!active) return;
+          active = false;
+          cancelAnimationFrame(frame);
+          untrack();
+        };
+        untrack = api.addCleanup(cancel);
+        return { cancel };
+      },
+      service(name, factory) {
+        if (services.has(name)) return services.get(name);
+        const previousScope = activeModuleCleanupScope;
+        activeModuleCleanupScope = null;
+        let service;
+        try {
+          service = factory(api);
+        } finally {
+          activeModuleCleanupScope = previousScope;
+        }
+        services.set(name, service);
+        if (typeof service?.dispose === "function") addGlobalCleanup(() => service.dispose());
+        return service;
+      },
+      networkHooks() {
+        return api.service("network-hooks", () => createBiliKitNetworkHookManager(window, history));
+      },
+      dispose() {
+        if (api.disposed) return;
+        api.disposed = true;
+        while (cleanups.length) {
+          try { cleanups.pop()(); } catch {}
+        }
+        services.clear();
+        try { delete window[key]; } catch {}
+      }
+    };
+    const onPageHide = (event) => {
+      if (!event.persisted) api.dispose();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    addGlobalCleanup(() => window.removeEventListener("pagehide", onPageHide));
+    try {
+      Object.defineProperty(window, key, { configurable: true, value: api });
+    } catch {
+      window[key] = api;
+    }
+    return api;
+  }
   function readLocal() {
     try {
       return JSON.parse(localStorage.getItem(KEY) || "{}") ?? {};
@@ -2893,7 +3013,7 @@
   }
   function renderAboutDetail(d) {
     d.appendChild(el("div", "detail-title", "关于 BiliKit Performance"));
-    d.appendChild(el("div", "detail-desc", "面向 B 站首页、搜索与播放场景的 Edge / Chromium 性能优化脚本 · 作者 ct-yx · MIT"));
+    d.appendChild(el("div", "detail-desc", "面向 B 站播放、下载与列表场景的 Edge / Chromium userscript；首页保持原生布局并提供稳定性保护 · 作者 ct-yx · MIT"));
     const fields = el("div", "fields");
     const vrow = el("div", "field row");
     vrow.appendChild(el("span", "flabel", "版本"));
@@ -3743,7 +3863,7 @@
     description: "Edge/Chromium 按 B 站返回的出口地域选择国内/境外节点，同时保留原始回退地址",
     category: "播放",
     runAt: "start",
-    note: "播放页、首页和搜索页按 B 站返回的 IP 地域改写可替换的 bilivideo 直连地址，覆盖正式播放和悬停预览 playurl；首页/搜索/动态等 bfs 图片按 i0/i1/i2 实测节点改写。不扫描普通 JSON，不改变预览内容、清晰度或交互。自动模式读取 B 站接口的 IP 地域响应头或 nav JSON：CN/CHN 使用国内节点，HK/TW/MO 及其它代码使用境外节点，地域未确认前保留原生地址。MCDN 主地址不伪造签名；若 B 站同时下发签名完整的 bilivideo 直连备用地址，则优先使用直连，并保留 MCDN 回退。<br>可在控制台查看 <code>window.__BILIKIT_CDN_STATS__</code>、<code>window.__BILIKIT_HOME_FEED_STATS__</code> 和 <code>window.__BILIKIT_HOME_IMAGE_STATS__</code>。",
+    note: "按 B 站返回的 IP 地域改写可替换的 bilivideo 直连地址，覆盖正式播放和悬停预览 playurl。不扫描普通 JSON，不改变清晰度或交互。自动模式读取 B 站接口的 IP 地域响应头或 nav JSON：CN/CHN 走国内，HK/TW/MO 及其它代码走境外，地域未确认前保留原生地址。MCDN 主地址不伪造签名；若 B 站同时下发签名完整的 bilivideo 直连备用地址，则优先使用直连，并保留 MCDN 回退。<br>可在控制台查看 <code>window.__BILIKIT_CDN_STATS__</code>。",
     settings: [
       {
         key: "regionPolicy",
@@ -4175,6 +4295,401 @@
     ],
     init: init$3
   };
+  const COMMENT_LINK_MARK = "data-bk-comment-link";
+  const COMMENT_LINK_URL_ATTR = "data-bk-comment-link-url";
+  const COMMENT_LINK_URL_RE = /https:\/\/[^\s<>"'`]+/ig;
+  // 评论中常见的规避删链会把 Emoji 插在协议、域名或参数中间。
+  // 这里只在识别候选链接时移除 Emoji，不改动用户看到的原评论内容。
+  const COMMENT_LINK_EMOJI_RE = /(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Regional_Indicator}|\uFE0F|\u200D|\u20E3)/gu;
+  const COMMENT_LINK_TRAILING_RE = /[\s\u3000\u3001\u3002，。！？；：:、）》）】］】』」〉》>]+$/u;
+  const COMMENT_LINK_SPACE_RE = /[\s\u3000]/u;
+  function stripCommentLinkSeparators(value) {
+    return String(value || "")
+      .replace(/[\u200b-\u200d\ufeff]/g, "")
+      .replace(COMMENT_LINK_EMOJI_RE, "");
+  }
+  function normalizeCommentLink(value) {
+    let text = stripCommentLinkSeparators(value);
+    text = text.replace(/^[([{（【「『《]+/u, "").replace(COMMENT_LINK_TRAILING_RE, "");
+    try {
+      const url = new URL(text);
+      if (url.protocol !== "https:" || !url.hostname) return "";
+      return url.href;
+    } catch {
+      return "";
+    }
+  }
+  function restoreCommentLinks(tokens) {
+    const chars = [];
+    const pushText = (value, token) => {
+      for (const character of [...String(value || "")]) {
+        COMMENT_LINK_EMOJI_RE.lastIndex = 0;
+        if (/[\u200b-\u200d\ufeff]/u.test(character) || COMMENT_LINK_EMOJI_RE.test(character)) continue;
+        chars.push({ character, token });
+      }
+    };
+    for (const token of tokens || []) {
+      if (token.kind === "emoji") {
+        // 用一个内部标记记录表情位置；随后去掉标记两侧的空白，兼容
+        // “htt [表情] ps://” 这种 DOM 文本节点之间自带空格的写法。
+        chars.push({ character: "\u0000", token });
+        continue;
+      }
+      pushText(token.text, token);
+    }
+    const normalized = [];
+    let skipWhitespace = false;
+    for (const entry of chars) {
+      if (entry.character === "\u0000") {
+        while (normalized.length && COMMENT_LINK_SPACE_RE.test(normalized.at(-1).character)) normalized.pop();
+        skipWhitespace = true;
+        continue;
+      }
+      if (skipWhitespace && COMMENT_LINK_SPACE_RE.test(entry.character)) {
+        // 表情后如果接的是换行，说明它是链接与后文之间的分隔符；
+        // 普通空格仍然丢弃，以便继续拼接 “htt [表情] ps://”。
+        if (/[\r\n\u2028\u2029]/u.test(entry.character)) {
+          normalized.push({ character: "\n", token: entry.token });
+          skipWhitespace = false;
+        }
+        continue;
+      }
+      skipWhitespace = false;
+      normalized.push(entry);
+    }
+    const text = normalized.map((entry) => entry.character).join("");
+    const links = [];
+    for (const match of text.matchAll(COMMENT_LINK_URL_RE)) {
+      const raw = match[0];
+      const url = normalizeCommentLink(raw);
+      if (!url) continue;
+      const end = match.index + raw.length;
+      const endToken = normalized[Math.max(0, end - 1)]?.token || null;
+      links.push({ url, endToken });
+    }
+    return links;
+  }
+  function commentLinkSkipElement(element) {
+    if (!element || element.nodeType !== 1) return false;
+    if (element.hasAttribute(COMMENT_LINK_MARK)) return true;
+    if (element.closest("a,button,input,textarea,select,[contenteditable=\"true\"],[role=\"textbox\"],[data-bk-comment-link]")) return true;
+    return /^(?:script|style|template|textarea|input|button|select|option)$/i.test(element.localName || "");
+  }
+  function hasLiveCommentLinkButton(parent, url) {
+    if (!parent || parent.nodeType !== 1 || !url) return false;
+    const candidates = [];
+    for (const child of parent.childNodes || []) candidates.push(child);
+    try {
+      candidates.push(...parent.querySelectorAll?.(`[${COMMENT_LINK_MARK}]`) || []);
+    } catch {
+    }
+    return candidates.some((element) => element?.nodeType === 1
+      && element.hasAttribute?.(COMMENT_LINK_MARK)
+      && (element.getAttribute?.(COMMENT_LINK_URL_ATTR) === url || element.__bilikitCommentLinkUrl === url));
+  }
+  function isCommentEmojiNode(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const source = [
+      element.localName,
+      element.getAttribute("src"),
+      element.getAttribute("data-src"),
+      element.getAttribute("alt"),
+      element.getAttribute("title"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("data-emoji"),
+      element.getAttribute("data-name"),
+      element.getAttribute("data-emote"),
+      element.getAttribute("data-emoticon"),
+      element.className
+    ].filter(Boolean).join(" ");
+    return /(?:^|[\s/_-])(?:emoji|emoticon|expression|face|bili[-_ ]?(?:emoji|emote)|emote|garb|bfs\/(?:emote|garb|face)|表情)(?:[\s/_-]|$)|\[[^\]]+\]/i.test(source)
+      || element.hasAttribute("data-emoji")
+      || element.hasAttribute("data-name") && /^\[[^\]]+\]$/u.test(element.getAttribute("data-name") || "");
+  }
+  function collectCommentLinkTokens(root) {
+    const tokens = [];
+    const visit = (node) => {
+      for (const child of node?.childNodes || []) {
+        if (child.nodeType === 3) {
+          tokens.push({ kind: "text", text: child.nodeValue || "", node: child });
+          continue;
+        }
+        if (child.nodeType !== 1) continue;
+        if (commentLinkSkipElement(child)) continue;
+        if (isCommentEmojiNode(child)) {
+          tokens.push({ kind: "emoji", text: "", node: child });
+          continue;
+        }
+        if (child.localName === "br") {
+          tokens.push({ kind: "text", text: "\n", node: child });
+          continue;
+        }
+        visit(child);
+      }
+    };
+    visit(root);
+    return tokens;
+  }
+  function openCommentLink(url) {
+    const options = { active: true, insert: true, setParent: true };
+    try {
+      if (typeof GM_openInTab === "function") {
+        GM_openInTab(url, options);
+        return;
+      }
+    } catch {
+    }
+    try {
+      if (typeof GM !== "undefined" && typeof GM.openInTab === "function") {
+        GM.openInTab(url, options);
+        return;
+      }
+    } catch {
+    }
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+    }
+  }
+  function createCommentLinkButton(url) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "bilikit-comment-link";
+    button.textContent = "↗";
+    button.title = "打开识别到的链接";
+    button.setAttribute("aria-label", "打开识别到的链接");
+    button.setAttribute(COMMENT_LINK_MARK, "1");
+    button.setAttribute(COMMENT_LINK_URL_ATTR, url);
+    button.__bilikitCommentLinkUrl = url;
+    button.style.cssText = "display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:5px;padding:0;border:0;border-radius:6px;background:rgba(0,174,236,.12);color:var(--brand_blue,#00aeec);font:600 15px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;cursor:pointer;vertical-align:middle;";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCommentLink(url);
+    });
+    return button;
+  }
+  function initCommentObfuscatedLinks() {
+    if (isHomePage() || isSearchPage()) return;
+    if (window.__BILIKIT_COMMENT_LINKS__) return;
+    window.__BILIKIT_COMMENT_LINKS__ = true;
+    const runtime = getRuntimeCoordinator();
+    const injectedNodes = new Set();
+    let observedRoots = new WeakSet();
+    const observers = [];
+    const seenUrls = new WeakMap();
+    let topRoot = null;
+    let current = null;
+    let currentApp = null;
+    let appObserver = null;
+    let scanFrame = null;
+    const stats = {
+      enabled: true,
+      bound: false,
+      appFound: false,
+      shadowRoots: 0,
+      scannedElements: 0,
+      candidateElements: 0,
+      recognizedLinks: 0,
+      insertedButtons: 0,
+      lastRoot: "",
+      lastError: ""
+    };
+    try {
+      Object.defineProperty(window, "__BILIKIT_COMMENT_LINK_STATS__", { configurable: true, get: () => ({ ...stats }) });
+    } catch {
+    }
+    const scanElement = (element) => {
+      if (!element || element.nodeType !== 1 || commentLinkSkipElement(element)) return;
+      stats.scannedElements += 1;
+      const tokens = collectCommentLinkTokens(element);
+      const hasCandidate = tokens.some((token) => token.kind === "emoji" || /(?:https?:|h[\s\S]{0,8}t[\s\S]{0,8}t[\s\S]{0,8}p[\s\S]{0,8}s\s*:)/i.test(token.text || ""));
+      if (!hasCandidate) return;
+      stats.candidateElements += 1;
+      const links = restoreCommentLinks(tokens);
+      if (!links.length) return;
+      stats.recognizedLinks += links.length;
+      let urls = seenUrls.get(element);
+      if (!urls) seenUrls.set(element, urls = new Set());
+      for (const link of links) {
+        const endNode = link.endToken?.node;
+        if (!endNode || !endNode.parentNode || endNode.parentNode.nodeType !== 1) continue;
+        const parent = endNode.parentNode;
+        if (hasLiveCommentLinkButton(parent, link.url)) {
+          urls.add(link.url);
+          continue;
+        }
+        // 评论组件可能在保持同一文本节点的情况下重绘并移除按钮；
+        // 只有确认按钮仍在当前父节点中时，才把 URL 视为已处理。
+        urls.delete(link.url);
+        const button = createCommentLinkButton(link.url);
+        try {
+          parent.insertBefore(button, endNode.nextSibling);
+          urls.add(link.url);
+          injectedNodes.add(button);
+          stats.insertedButtons += 1;
+        } catch {
+        }
+      }
+    };
+    const scanRoot = (root) => {
+      if (!root) return;
+      const elements = [];
+      try {
+        if (root.nodeType === 1) elements.push(root);
+        elements.push(...root.querySelectorAll("*"));
+      } catch {
+        return;
+      }
+      for (const element of elements) scanElement(element);
+    };
+    const schedule = () => {
+      if (scanFrame || !topRoot) return;
+      scanFrame = runtime.frame(() => {
+        scanFrame = null;
+        // 评论组件会先插入宿主元素，再异步挂载 bili-comment-renderer、
+        // bili-rich-text 等多层 Shadow DOM。每个增量批次都重新走一遍
+        // composed tree，才能发现这次刚挂上的 ShadowRoot；observeRoot
+        // 使用 WeakSet 去重，不会重复注册观察器。
+        walk(topRoot);
+      });
+    };
+    const observeRoot = (root) => {
+      if (!root || observedRoots.has(root)) return;
+      observedRoots.add(root);
+      if (typeof ShadowRoot !== "undefined" && root instanceof ShadowRoot) stats.shadowRoots += 1;
+      const observer = runtime.createObserver((mutations) => {
+        if (mutations.some((mutation) =>
+          mutation.type === "childList" && (mutation.addedNodes.length || mutation.removedNodes.length)
+          || mutation.type === "attributes" && ["src", "data-src", "alt", "title", "aria-label", "data-name", "data-emoji", "data-emote", "class"].includes(mutation.attributeName)
+          || mutation.type === "characterData"
+        )) schedule();
+      });
+      observer?.observe(root, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ["src", "data-src", "alt", "title", "aria-label", "data-name", "data-emoji", "data-emote", "class"]
+      });
+      if (observer) observers.push(observer);
+    };
+    const walk = (root) => {
+      if (!root) return;
+      observeRoot(root);
+      scanRoot(root);
+      // #commentapp 自身可能直接挂载开放 Shadow DOM；只遍历它的后代会漏掉
+      // 这种结构，尤其是评论组件尚未注册为 bili-comments 时。
+      if (root.nodeType === 1 && root.shadowRoot) walk(root.shadowRoot);
+      let nodes = [];
+      try { nodes = root.querySelectorAll("*"); } catch {
+      }
+      for (const node of nodes) {
+        if (!node.shadowRoot) continue;
+        walk(node.shadowRoot);
+      }
+    };
+    const bind = (comments) => {
+      const shadow = comments?.shadowRoot || comments;
+      if (!shadow?.querySelectorAll) return;
+      for (const observer of observers) observer.disconnectAndForget();
+      observers.length = 0;
+      observedRoots = new WeakSet();
+      topRoot = shadow;
+      stats.bound = true;
+      stats.lastRoot = comments?.localName || (typeof ShadowRoot !== "undefined" && shadow instanceof ShadowRoot ? "shadow-root" : "comment-root");
+      walk(shadow);
+    };
+    const release = () => {
+      for (const observer of observers) observer.disconnectAndForget();
+      observers.length = 0;
+      observedRoots = new WeakSet();
+      if (scanFrame) scanFrame.cancel();
+      scanFrame = null;
+      topRoot = null;
+      current = null;
+    };
+    const findCommentHost = (root) => {
+      if (!root?.querySelector) return null;
+      const direct = root.querySelector("bili-comments");
+      if (direct) return direct;
+      if (root.nodeType === 1 && root.shadowRoot) {
+        const nested = findCommentHost(root.shadowRoot);
+        if (nested) return nested;
+      }
+      for (const element of root.querySelectorAll("*")) {
+        if (!element.shadowRoot) continue;
+        const nested = findCommentHost(element.shadowRoot);
+        if (nested) return nested;
+      }
+      return null;
+    };
+    const tryBind = () => {
+      const comments = findCommentHost(currentApp);
+      if (comments && comments.shadowRoot && (comments !== current || comments.shadowRoot !== topRoot)) {
+        current = comments;
+        bind(comments);
+        return;
+      }
+      // 兼容新版评论组件还未注册为 bili-comments，或评论节点直接挂在
+      // #commentapp light DOM 的情况；先扫描容器，后续发现 Shadow DOM 再切换。
+      if (!comments && currentApp && current !== currentApp) {
+        current = currentApp;
+        bind(currentApp);
+      }
+    };
+    const watch = (app) => {
+      if (app === currentApp && appObserver) {
+        tryBind();
+        return;
+      }
+      appObserver?.disconnectAndForget();
+      release();
+      currentApp = app;
+      stats.appFound = true;
+      appObserver = runtime.createObserver(tryBind);
+      appObserver?.observe(app, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-params"] });
+      tryBind();
+    };
+    const ensureApp = () => {
+      if (currentApp?.isConnected) {
+        // bili-comments 可能先出现在 light DOM，稍后才由自定义元素挂上
+        // Shadow DOM。仅观察 #commentapp 的 childList 捕捉不到这个时序，
+        // 因此每轮轻量轮询都要重试绑定。
+        tryBind();
+        if (topRoot) schedule();
+        return;
+      }
+      appObserver?.disconnectAndForget();
+      appObserver = null;
+      currentApp = null;
+      stats.appFound = false;
+      stats.bound = false;
+      release();
+      const app = document.querySelector("#commentapp") || document.querySelector("bili-comments")?.parentElement;
+      if (app) watch(app);
+    };
+    ensureApp();
+    const appPoll = setInterval(ensureApp, 2e3);
+    runtime.addCleanup(() => {
+      clearInterval(appPoll);
+      appObserver?.disconnectAndForget();
+      release();
+      for (const node of injectedNodes) node.remove();
+      injectedNodes.clear();
+      if (window.__BILIKIT_COMMENT_LINK_STATS__) delete window.__BILIKIT_COMMENT_LINK_STATS__;
+      if (window.__BILIKIT_COMMENT_LINKS__) delete window.__BILIKIT_COMMENT_LINKS__;
+    });
+  }
+  const commentObfuscatedLinks = {
+    id: "comment-obfuscated-links",
+    name: "评论链接识别",
+    description: "识别评论中用 Emoji 或 B 站表情拆开的 HTTPS 链接，并提供新标签页跳转按钮",
+    category: "界面",
+    defaultEnabled: true,
+    runAt: "idle",
+    init: initCommentObfuscatedLinks
+  };
   function isWakeLockIgnoredVideo(v) {
     return v.classList.contains("bk-feed-vpreview");
   }
@@ -4378,45 +4893,50 @@
       return rule || null;
     };
     const removeFetchHook = networkHooks.addFetch("no-login-net", (origFetch) => function(input, init2) {
-        var _a;
         const url = urlOf(input);
         const rule = findRule(url);
         if (!rule) return origFetch.apply(this, arguments);
-        let realInput = input;
-        let realInit = init2;
-        const rw = (_a = rule.rewriteRequest) == null ? void 0 : _a.call(rule, url);
-        if (rw && (rw.url || rw.credentials)) {
-          if (input instanceof Request && !rw.url) {
-            realInput = new Request(input, rw.credentials ? { credentials: rw.credentials } : {});
-            realInit = init2;
-          } else {
-            const base = input instanceof Request ? requestToInit(input) : init2 || {};
-            realInput = rw.url || url;
-            realInit = { ...base, ...rw.credentials ? { credentials: rw.credentials } : {} };
-          }
-        }
-        const response = origFetch.call(this, realInput, realInit);
-        if (!rule.rewriteResponse && !rule.onResponse) return response;
-        return response.then(async (resp) => {
-          if (rule.onResponse) {
-            try {
-              void resp.clone().json().then((payload) => rule.onResponse(payload, url)).catch(() => {
-              });
-            } catch {
+        const dispatch = (rw) => {
+          let realInput = input;
+          let realInit = init2;
+          if (rw && (rw.url || rw.credentials)) {
+            if (input instanceof Request && !rw.url) {
+              realInput = new Request(input, rw.credentials ? { credentials: rw.credentials } : {});
+              realInit = init2;
+            } else {
+              const base = input instanceof Request ? requestToInit(input) : init2 || {};
+              realInput = rw.url || url;
+              realInit = { ...base, ...rw.credentials ? { credentials: rw.credentials } : {} };
             }
           }
-          if (!rule.rewriteResponse) return resp;
-          try {
-            const text = await resp.clone().text();
-            const out = rule.rewriteResponse(JSON.parse(text), url);
-            const headers = new Headers(resp.headers);
-            headers.delete("content-length");
-            headers.delete("content-encoding");
-            return new Response(JSON.stringify(out), { status: resp.status, statusText: resp.statusText, headers });
-          } catch {
-            return resp;
-          }
-        });
+          const response = origFetch.call(this, realInput, realInit);
+          if (!rule.rewriteResponse && !rule.onResponse) return response;
+          return response.then(async (resp) => {
+            if (rule.onResponse) {
+              try {
+                void resp.clone().json().then((payload) => rule.onResponse(payload, url)).catch(() => {
+                });
+              } catch {
+              }
+            }
+            if (!rule.rewriteResponse) return resp;
+            try {
+              const text = await resp.clone().text();
+              const out = rule.rewriteResponse(JSON.parse(text), url);
+              const headers = new Headers(resp.headers);
+              headers.delete("content-length");
+              headers.delete("content-encoding");
+              return new Response(JSON.stringify(out), { status: resp.status, statusText: resp.statusText, headers });
+            } catch {
+              return resp;
+            }
+          });
+        };
+        const immediate = rule.rewriteRequest?.(url);
+        if (immediate?.url || immediate?.credentials || !rule.awaitRewrite) return dispatch(immediate);
+        // fetch 也必须等待首轮 WBI 密钥；只在 XHR.send 中等待会让播放器的
+        // 首个 playurl 请求先按匿名低清路径发出，后续再有密钥也来不及切换。
+        return Promise.resolve(rule.awaitRewrite(url)).then((rw) => dispatch(rw), () => dispatch(immediate));
       });
     const removeXhrHook = networkHooks.addXHR("no-login-net", (OX) => class X extends OX {
         constructor() {
@@ -4782,11 +5302,34 @@
       return null;
     }
   }
-  function init$1(_cfg) {
+  function init$1(cfg) {
     var _a;
     if (window.__BILIKIT_NO_LOGIN__) return;
     if (window.top !== window.self && !location.hash.includes("bk-drawer")) return;
     if (location.hostname === "passport.bilibili.com") return;
+    const commentsEnabled = cfg?.get?.("comments") !== false;
+    const video1080pEnabled = cfg?.get?.("video1080p") !== false;
+    if (!commentsEnabled && !video1080pEnabled) {
+      clearFakeUid();
+      return;
+    }
+    const requestStats = {
+      enabled: true,
+      commentsEnabled,
+      video1080pEnabled,
+      commentRequests: 0,
+      playurlRequests: 0,
+      playurlRewrites: 0,
+      wbiWaits: 0,
+      wbiReady: 0,
+      wbiFallbacks: 0,
+      lastPlayurlUrl: "",
+      lastFailure: ""
+    };
+    try {
+      Object.defineProperty(window, "__BILIKIT_NO_LOGIN_STATS__", { configurable: true, get: () => ({ ...requestStats }) });
+    } catch {
+    }
     const homePage = isHomePage();
     const searchPage = isSearchPage();
     const bangumiPage = /^\/(?:bangumi|cheese)\/play\//i.test(location.pathname);
@@ -4826,7 +5369,7 @@
       return installSearchUrlFix();
     }
     window.__BILIKIT_NO_LOGIN__ = true;
-    showGuestNotice();
+    showGuestNotice({ comments: commentsEnabled, video1080p: video1080pEnabled });
     installLogoutIntercept();
     if (!/DedeUserID=/.test(document.cookie)) {
       try {
@@ -4840,7 +5383,7 @@
       (document.head || document.documentElement).appendChild(st);
     } catch {
     }
-    if (!bangumiPage) {
+    if (video1080pEnabled && !bangumiPage) {
       try {
         // 普通视频免登录模式隐藏 __playinfo__，但保留内存快照供下载工作台使用。
         // PGC 播放器会自己管理这两个全局状态；番剧页不重定义它们，避免破坏
@@ -4870,7 +5413,7 @@
       }
     }
     const pureFetch = window.fetch.bind(window);
-    warmKeys(pureFetch);
+    if (video1080pEnabled) warmKeys(pureFetch);
     const MID = Math.floor(Math.random() * 1e15);
     const MOCK_USER = {
       isLogin: true,
@@ -4979,12 +5522,15 @@
       },
       // reply：匿名请求（假 cookie 会被拒，去掉反而正常返公开评论）→ 视频/动态下方评论
       {
-        match: (u) => u.includes("/x/v2/reply/wbi/main") || u.includes("/x/v2/reply/reply"),
-        rewriteRequest: () => ({ credentials: "omit" })
+        match: (u) => commentsEnabled && /\/x\/v2\/reply\/(?:wbi\/)?(?:main|reply)(?:[/?#]|$)/i.test(u),
+        rewriteRequest: () => {
+          requestStats.commentRequests += 1;
+          return { credentials: "omit" };
+        }
       },
       // player/wbi/v2：改 login_mid / 等级 / 字幕字段 → 播放器 UI 认账（清晰度、字幕可选）
       {
-        match: (u) => !searchPage && u.includes("/x/player/wbi/v2"),
+        match: (u) => video1080pEnabled && !searchPage && u.includes("/x/player/wbi/v2"),
         rewriteResponse: (j) => {
           try {
             const d = j == null ? void 0 : j.data;
@@ -5042,7 +5588,7 @@
       // 番剧/PGC（ogv/player/playview）：把 user_status.is_login 掰成 true → 播放器不再弹
       // 「登录后观看」、清晰度不锁最低。PGC 无需重签 playurl，is_login 即全部机制（beefreely 同）。
       {
-        match: (u) => !searchPage && u.includes("/ogv/player/playview"),
+        match: (u) => video1080pEnabled && !searchPage && u.includes("/ogv/player/playview"),
         rewriteResponse: (j) => {
           var _a2;
           try {
@@ -5059,35 +5605,58 @@
       {
         // 搜索页的 playurl 属于 B 站原生悬停预览：保持原请求参数，避免
         // 免登录模块把低清预览放大成 1080p/DASH。
-        match: (u) => !searchPage && u.includes("/x/player/wbi/playurl"),
+        match: (u) => video1080pEnabled && !searchPage && NO_LOGIN_PLAYURL_RE.test(u),
         // 捕获本页实际返回的轨道供下载工作台使用；不重写或延迟播放响应。
-        onResponse: (payload, url) => cacheDownloadPlayinfo(payload, "no-login-hook", url),
+        onResponse: (payload, url) => {
+          requestStats.lastPlayurlUrl = String(url || "");
+          cacheDownloadPlayinfo(payload, "no-login-hook", url);
+        },
         // 快路径：key 已缓存 → 同步签名，零延迟
         rewriteRequest: (u) => {
+          requestStats.playurlRequests += 1;
+          requestStats.lastPlayurlUrl = String(u || "");
           try {
             const { base, params } = playurlParams(u);
             const signed = signQuery(params);
-            if (!signed) return;
+            if (!signed) {
+              requestStats.wbiFallbacks += 1;
+              return;
+            }
+            requestStats.playurlRewrites += 1;
             return { url: `${base}?${signed}` };
           } catch {
+            requestStats.lastFailure = "playurl-rewrite-error";
             return;
           }
         },
         // 首次播放时 WBI 密钥可能尚未缓存；等待密钥可避免首个播放请求落到低清路径，
         // 超时则保留原请求。
         awaitRewrite: async (u) => {
+          requestStats.wbiWaits += 1;
           try {
-            if (!await ensureKeys(pureFetch, 1500)) return;
+            if (!await ensureKeys(pureFetch, 1500)) {
+              requestStats.wbiFallbacks += 1;
+              requestStats.lastFailure = "wbi-timeout";
+              return;
+            }
+            requestStats.wbiReady += 1;
             const { base, params } = playurlParams(u);
             const signed = signQuery(params);
+            if (signed) requestStats.playurlRewrites += 1;
             return signed ? { url: `${base}?${signed}` } : void 0;
           } catch {
+            requestStats.wbiFallbacks += 1;
+            requestStats.lastFailure = "wbi-rewrite-error";
             return;
           }
         }
       }
     ];
-    return installNetHook(rules);
+    const disposeNetHook = installNetHook(rules);
+    return () => {
+      disposeNetHook?.();
+      if (window.__BILIKIT_NO_LOGIN_STATS__) delete window.__BILIKIT_NO_LOGIN_STATS__;
+    };
   }
   const NOTICE_KEY = "no-login.notified";
   const NOTICE_CSS = `
@@ -5131,9 +5700,13 @@
     } catch {
     }
   }
-  function showGuestNotice() {
+  function showGuestNotice(features = {}) {
     if (window.top !== window.self) return;
     if (get(NOTICE_KEY, false)) return;
+    const labels = [
+      features.comments !== false ? "评论" : "",
+      features.video1080p !== false ? "1080p" : ""
+    ].filter(Boolean).join(" / ");
     const run = () => {
       var _a, _b, _c;
       if (!document.body) return;
@@ -5157,7 +5730,7 @@
         (document.head || document.documentElement).appendChild(style);
         const box = document.createElement("div");
         box.className = "bk-nl-toast";
-        box.innerHTML = '<div class="bk-nl-txt"><b>已开启免登录</b>——未登录也能看评论 / 1080p。<div class="bk-nl-sub">想用自己的账号点「我要登录」；不需要此功能点「关闭功能」。</div></div><button class="bk-nl-btn bk-nl-off" type="button">关闭功能</button><button class="bk-nl-btn bk-nl-login" type="button">我要登录</button><button class="bk-nl-x" type="button" aria-label="忽略">×</button>';
+        box.innerHTML = `<div class="bk-nl-txt"><b>已开启免登录</b>——未登录也能看${labels || "公开内容"}。<div class="bk-nl-sub">想用自己的账号点「我要登录」；不需要此功能点「关闭功能」。</div></div><button class="bk-nl-btn bk-nl-off" type="button">关闭功能</button><button class="bk-nl-btn bk-nl-login" type="button">我要登录</button><button class="bk-nl-x" type="button" aria-label="忽略">×</button>`;
         document.body.appendChild(box);
         requestAnimationFrame(() => box.classList.add("on"));
         let fadeTimer = setTimeout(dismiss, 8e3);
@@ -5219,6 +5792,10 @@
     // 唯一能让「无痕未登录时默认免登录」成立的就是把默认值设对；用一次性披露弹框换取透明、避免静默吓到人。
     defaultEnabled: true,
     runAt: "start",
+    settings: [
+      { key: "comments", type: "toggle", label: "免登录评论区", default: true, hint: "未登录时使用匿名公开评论接口；关闭后不改写评论请求" },
+      { key: "video1080p", type: "toggle", label: "免登录 1080p", default: true, hint: "未登录时请求官方允许的试看清晰度；关闭后不改写播放清晰度请求" }
+    ],
     init: init$1
   };
   const DRAWER_HISTORY_KEY = "__bilikitDrawer";
@@ -5763,6 +6340,7 @@
   const FAVORITES_FIX_CACHE_KEY = "bilikit:favorites-fix:v1";
   const FAVORITES_FIX_CACHE_LIMIT = 240;
   const FAVORITES_FIX_STYLE_ID = "bilikit-favorites-fix-style";
+  const FAVORITES_FIX_DOWNLOAD_ENTRY_ID = "bilikit-favorites-download-entry";
   const FAVORITES_FIX_HOVER_PANEL_ID = "bilikit-favfix-hover-panel";
   const FAVORITES_FIX_GENERIC_TITLE_RE = /^(?:已失效视频|视频去哪了呢？|该视频或许已被删除了|该视频或许已经被删除了|视频去哪了|)$/i;
   const FAVORITES_FIX_LOADING_TITLE_RE = /^(?:正在加载数据(?:\.\.\.|…)?|加载中(?:\.\.\.|…)?|正在查询(?:\.\.\.|…)?|查询中(?:\.\.\.|…)?)$/i;
@@ -6419,6 +6997,12 @@
     const medias = Array.isArray(data.medias) ? data.medias : Array.isArray(data.list) ? data.list : [];
     return { info: data.info && typeof data.info === "object" ? data.info : {}, medias };
   }
+  function favoritesFixParseDirectoryResponse(primaryPayload, fallbackPayload) {
+    const primary = favoritesFixParseApiResponse(primaryPayload);
+    if (primary?.medias?.length) return primary;
+    const fallback = favoritesFixParseApiResponse(fallbackPayload);
+    return fallback?.medias?.length ? fallback : null;
+  }
   async function favoritesFixFetchPage(info, targetCount) {
     const pageSize = Math.max(20, Math.min(40, Math.max(20, Number(targetCount) || 20)));
     const page = Math.max(1, Number(info.page) || 1);
@@ -6491,6 +7075,53 @@
       url: media.bvid || media.aid ? `https://www.bilibili.com/video/${media.bvid || `av${media.aid}`}/` : ""
     };
   }
+  function favoritesFixBuildDownloadCatalog(entries = [], collectionTitle = "公开收藏夹") {
+    const output = [];
+    const seen = new Set();
+    const rootTitle = favoritesFixString(collectionTitle, 800) || "公开收藏夹";
+    for (const raw of Array.isArray(entries) ? entries : []) {
+      const entry = raw && typeof raw === "object" ? raw : {};
+      const bvid = favoritesFixString(entry.bvid, 80).match(/BV[0-9A-Za-z]+/i)?.[0] || "";
+      const aid = favoritesFixNormalizeAid(entry.aid);
+      const videoId = bvid || (aid ? `av${aid}` : "");
+      if (!videoId) continue;
+      const identity = videoId.toLowerCase();
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const pages = favoritesFixNormalizePages(entry.pages);
+      const firstPage = pages[0] || {};
+      const cid = String(entry.cid || firstPage.cid || "").match(/^\d+$/)?.[0] || "";
+      const title = favoritesFixString(entry.title, 800) || favoritesFixString(firstPage.title, 800) || "Bilibili 视频";
+      const part = favoritesFixString(entry.part || firstPage.title || title, 500) || title;
+      const normalizedPages = pages.length ? pages : [{
+        page: 1,
+        title: part,
+        duration: favoritesFixDuration(entry.duration),
+        cid
+      }];
+      output.push({
+        collectionIndex: output.length + 1,
+        collectionTitle: rootTitle,
+        collectionRootTitle: rootTitle,
+        downloadScope: "collection",
+        favoritesMode: true,
+        videoId,
+        bvid,
+        aid,
+        title,
+        part,
+        cid,
+        pages: normalizedPages,
+        collectionPageCount: Math.max(1, normalizedPages.length),
+        duration: favoritesFixDuration(entry.duration) || favoritesFixDuration(firstPage.duration),
+        ownerName: favoritesFixString(entry.ownerName, 120),
+        source: "favorites-public",
+        index: Number(entry.index) || output.length + 1,
+        url: entry.url || `https://www.bilibili.com/video/${videoId}/`
+      });
+    }
+    return output;
+  }
   async function favoritesFixGetPublicEntries(options = {}) {
     const current = favoritesFixResolveInfo();
     const fid = String(options.fid || current.fid || "").match(/^\d+$/)?.[0] || "";
@@ -6510,12 +7141,29 @@
     let page = 1;
     let totalHint = 0;
     for (let requestCount = 0; requestCount < 100; requestCount += 1, page += 1) {
-      const payload = await favoritesFixRequestJson(
-        favoritesFixApiUrl("/medialist/gateway/base/spaceDetail", info, page, pageSize),
-        "收藏夹公开接口",
-        8000
-      );
-      const parsed = favoritesFixParseApiResponse(payload);
+      let publicPayload = null;
+      try {
+        publicPayload = await favoritesFixRequestJson(
+          favoritesFixApiUrl("/medialist/gateway/base/spaceDetail", info, page, pageSize),
+          "收藏夹公开接口",
+          8000
+        );
+      } catch {
+      }
+      let fallbackPayload = null;
+      let parsed = favoritesFixParseDirectoryResponse(publicPayload, null);
+      if (!parsed) {
+        try {
+          // B 站当前公开收藏夹页实际使用这个接口；不带登录凭据时仍能读取公开目录。
+          fallbackPayload = await favoritesFixRequestJson(
+            favoritesFixApiUrl("/x/v3/fav/resource/list", info, page, pageSize),
+            "收藏夹公开目录接口",
+            8000
+          );
+        } catch {
+        }
+        parsed = favoritesFixParseDirectoryResponse(null, fallbackPayload);
+      }
       if (!parsed) throw new Error("收藏夹公开接口没有返回可用数据");
       totalHint = Number(parsed.info?.media_count || parsed.info?.count || parsed.info?.total || totalHint) || totalHint;
       if (!parsed.medias.length) break;
@@ -7118,10 +7766,82 @@
 .bk-favfix-hover-grid .bk-favfix-hover-label,.bk-favfix-hover-grid .bk-favfix-hover-value{display:block}
 .bk-favfix-hover-grid .bk-favfix-hover-value{margin-top:1px;font-variant-numeric:tabular-nums}
 .bk-favfix-hover-reason{margin-top:12px;padding-top:10px;border-top:1px solid var(--line_regular,rgba(0,0,0,.1));color:var(--text2,#61666d);font-size:12px}
+.bk-favfix-download-entry{position:fixed;right:24px;bottom:82px;z-index:99990;min-height:38px;padding:0 13px;border:1px solid rgba(255,255,255,.12);border-radius:20px;background:rgba(22,23,28,.92);box-shadow:0 3px 14px rgba(0,0,0,.3);color:#fff;cursor:pointer;font:13px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.bk-favfix-download-entry:hover{transform:translateY(-2px);color:var(--brand_blue,#00aeec)}
+.bk-favfix-download-entry:active{transform:scale(.95)}
+.bk-favfix-download-entry[aria-busy="true"]{cursor:wait;opacity:.7}
+@media(prefers-color-scheme:light){.bk-favfix-download-entry{border-color:rgba(0,0,0,.12);background:rgba(255,255,255,.94);box-shadow:0 3px 14px rgba(0,0,0,.16);color:#18191c}}
+@media(prefers-reduced-motion:reduce){.bk-favfix-download-entry{transition:none!important}}
 @media(max-width:480px){.bk-favfix-hover-panel{padding:12px;width:calc(100vw - 16px);max-height:calc(100vh - 16px)}.bk-favfix-hover-title{font-size:15px}.bk-favfix-hover-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(prefers-color-scheme:dark){.bk-favfix-menu-trigger,.bk-favfix-menu-panel{background:#23252b;color:#e3e5e7}.bk-favfix-menu-panel button{color:#e3e5e7}}
 `;
     (document.head || document.documentElement).appendChild(style);
+  }
+  function favoritesFixInstallDownloadEntry(runtime) {
+    if (!document.body || document.getElementById(FAVORITES_FIX_DOWNLOAD_ENTRY_ID)) return;
+    const button = document.createElement("button");
+    button.id = FAVORITES_FIX_DOWNLOAD_ENTRY_ID;
+    button.type = "button";
+    button.className = "bk-favfix-download-entry";
+    button.textContent = "打开收藏下载";
+    button.title = "读取公开收藏夹并打开批量下载工作台";
+    button.setAttribute("aria-label", "打开收藏夹批量下载工作台");
+    const setButtonState = (busy, message = "") => {
+      button.disabled = !!busy;
+      button.setAttribute("aria-busy", busy ? "true" : "false");
+      button.textContent = busy ? "读取收藏夹…" : "打开收藏下载";
+      if (message) button.title = message;
+    };
+    const getCollectionTitle = () => {
+      const title = document.querySelector(".fav-list-main h1, .fav-list-main .fav-title, .fav-content h1")?.textContent;
+      return favoritesFixString(title, 800) || "公开收藏夹";
+    };
+    const onClick = async () => {
+      if (button.disabled) return;
+      const open = window.__BILIKIT_OPEN_DOWNLOAD_WORKSPACE__;
+      if (typeof open !== "function") {
+        setButtonState(false, "下载工作台尚未准备好，请稍后重试");
+        return;
+      }
+      setButtonState(true);
+      try {
+        const entries = await favoritesFixGetPublicEntries({ all: true });
+        const catalog = favoritesFixBuildDownloadCatalog(entries, getCollectionTitle());
+        if (!catalog.length) throw new Error("公开收藏夹没有可下载的视频");
+        const first = catalog[0];
+        open({
+          title: first.title,
+          filenameTitle: first.collectionRootTitle,
+          collectionTitle: first.collectionTitle,
+          collectionRootTitle: first.collectionRootTitle,
+          part: first.part,
+          ownerName: first.ownerName,
+          videoId: first.videoId,
+          bvid: first.bvid,
+          aid: first.aid,
+          cid: first.cid,
+          page: first.page || 1,
+          duration: first.duration,
+          downloadScope: "collection",
+          favoritesMode: true,
+          routeKey: `favorites:${location.href}`,
+          videos: [],
+          audios: []
+        }, [], catalog);
+        setButtonState(false, `已载入 ${catalog.length} 个收藏视频`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "公开收藏夹读取失败";
+        setButtonState(false, message.slice(0, 180));
+        console.warn("[BiliKit] 公开收藏夹批量下载入口失败：", error);
+      }
+    };
+    runtime.listen(button, "click", onClick);
+    document.body.appendChild(button);
+    runtime.addCleanup(() => button.remove());
+    const observer = runtime.createObserver(() => {
+      if (isFavoritesFixPage() && !button.isConnected && document.body) document.body.appendChild(button);
+    });
+    observer?.observe(document.body, { childList: true, subtree: true });
   }
   function favoritesFixRefreshStats() {
     if (typeof document === "undefined" || !document.querySelectorAll) return;
@@ -7153,6 +7873,7 @@
     const recoverHidden = cfg.get("recoverHidden") !== false;
     const showMenu = cfg.get("showMenu") !== false;
     const runtime = getRuntimeCoordinator();
+    if (cfg.get("batchDownload") !== false) favoritesFixInstallDownloadEntry(runtime);
     favoritesFixInstallHoverHandlers(runtime);
     const state = { running: false, generation: 0, loadedRoute: "", loadedSignature: "", timer: null, observer: null };
     const closeMenus = (event) => {
@@ -7287,6 +8008,15 @@
       clear: () => { localStorage.removeItem(FAVORITES_FIX_CACHE_KEY); schedule(true); },
       getEntries: (options = {}) => favoritesFixGetPublicEntries(options)
     };
+    runtime.addCleanup(() => {
+      clearTimeout(FAVORITES_FIX_HOVER_STATE.hideTimer);
+      FAVORITES_FIX_HOVER_STATE.panel?.remove?.();
+      FAVORITES_FIX_HOVER_STATE.panel = null;
+      FAVORITES_FIX_HOVER_STATE.anchor = null;
+      FAVORITES_FIX_HOVER_STATE.media = null;
+      if (window.__BILIKIT_FAVORITES_FIX_API__) delete window.__BILIKIT_FAVORITES_FIX_API__;
+      if (window.__BILIKIT_FAVORITES_FIX__) delete window.__BILIKIT_FAVORITES_FIX__;
+    });
   }
   const favoritesFix = {
     id: "favorites-fix",
@@ -7298,7 +8028,8 @@
     note: "仅在 space.bilibili.com 的收藏夹页运行。优先使用 B 站官方收藏夹公开元数据接口；标题或封面仍为占位时，会按 AV 号查询有限的公开元数据来源，只接受明确有效的结果。标题和封面独立恢复，仍为占位的目标封面可悬停查看完整资料，缓存只保存公开元数据和短期命中状态。",
     settings: [
       { key: "recoverHidden", type: "toggle", label: "恢复公开收藏夹中的隐藏视频", default: true, hint: "只插入 B 站公开接口明确标记为隐藏、且当前页面没有的条目；搜索和筛选页面不自动补齐" },
-      { key: "showMenu", type: "toggle", label: "显示收藏夹工具菜单", default: true, hint: "在卡片右上角提供复制信息、查看封面、打开 UP 主空间和清除单条缓存" }
+      { key: "showMenu", type: "toggle", label: "显示收藏夹工具菜单", default: true, hint: "在卡片右上角提供复制信息、查看封面、打开 UP 主空间和清除单条缓存" },
+      { key: "batchDownload", type: "toggle", label: "提供收藏夹批量下载入口", default: true, hint: "在公开收藏夹页打开现有下载工作台，选择视频或分 P 批量下载" }
     ],
     init: initFavoritesFix
   };
@@ -8034,6 +8765,10 @@
       ownerName: model.ownerName,
       duration: model.duration,
       routeKey: model.routeKey || `${model.videoId}|p=${model.page}|cid=${model.cid}`,
+      downloadScope: model.downloadScope,
+      favoritesMode: model.favoritesMode,
+      collectionTitle: model.collectionTitle,
+      collectionRootTitle: model.collectionRootTitle,
       stateMatchesUrl: true,
       urlVideoId: model.videoId,
       requiresCid: false
@@ -8174,175 +8909,6 @@
   }
   const PC_HOSTS = ["https://api.bilibili.com", "https://s1.hdslb.com", "https://i0.hdslb.com", "https://i1.hdslb.com", "https://i2.hdslb.com"];
   const SEARCH_PRECONNECT_HOSTS = ["https://api.bilibili.com", "https://i0.hdslb.com", "https://i1.hdslb.com", "https://i2.hdslb.com"];
-  const HOME_PRECONNECT_HOSTS = ["https://s1.hdslb.com", "https://api.bilibili.com", "https://i0.hdslb.com", "https://api.vc.bilibili.com"];
-  // 信息流封面/横幅的优先级观察范围；CDN 改写本身会覆盖所有 i0/i1/i2 的 bfs 图片。
-  const BILI_MEDIA_IMAGE_RE = /^(?:https?:)?\/\/(?:i[0-2]\.)?hdslb\.com\/bfs\/(?:archive|banner|live|bangumi|feed-admin|sycp\/|upower\/|new_dyn\/|storyff\/)/i;
-  const BILI_CDN_IMAGE_RE = /^\/bfs\//i;
-  const HOME_IMAGE_HOSTS = ["i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com"];
-  const HOME_IMAGE_DEFAULT_HOST = "i0.hdslb.com";
-  const HOME_IMAGE_CACHE_KEY = "bilikit:home-image-cdn:v4";
-  const HOME_IMAGE_CACHE_FALLBACK_KEYS = [];
-  const HOME_IMAGE_CACHE_TTL = 15 * 60 * 1e3;
-  const HOME_FEED_PRELOAD_ROWS_DEFAULT = 6;
-  const HOME_FEED_PRELOAD_ROWS_MIN = 4;
-  const HOME_FEED_PRELOAD_ROWS_MAX = 10;
-  const HOME_FEED_AUTO_LOAD_DELAY = 3e3;
-  const HOME_FEED_AUTO_LOAD_ROWS_DEFAULT = 10;
-  const HOME_FEED_AUTO_LOAD_ROWS_MIN = 5;
-  const HOME_FEED_AUTO_LOAD_ROWS_MAX = 15;
-  const HOME_FEED_PRELOAD_MIN = 420;
-  const HOME_FEED_PRELOAD_MAX = 2600;
-  const HOME_FEED_PRELOAD_BATCH_MIN = 12;
-  const HOME_FEED_PRELOAD_BATCH_MAX = 36;
-  // 每次真实用户滚动后的闲置周期最多触发三次原生探测；没有新的实际滚动就不重置。
-  const HOME_FEED_AUTO_LOAD_MAX_PROBES = 3;
-  // 输入事件与对应 scroll 事件通常在同一帧内到达；窗口过长会把脚本自己的
-  // 后续滚动误认为用户继续操作，从而错误地重新开启闲置计时器。
-  const HOME_FEED_AUTO_LOAD_USER_INTENT_GRACE = 300;
-  const HOME_FEED_AUTO_LOAD_TIMEOUT = 8e3;
-  const HOME_FEED_AUTO_LOAD_RETRY_DELAY = 800;
-  const HOME_FEED_AUTO_LOAD_DOM_SETTLE = 120;
-  const HOME_FEED_AUTO_LOAD_INTERNAL_SCROLL_GRACE = 500;
-  const HOME_FEED_CARD_RE = /(?:^|\s)(?:feed-card|floor-single-card|bili-feed-card|bili-video-card)(?:\s|$)/;
-  const HOME_FEED_CARD_SELECTOR = ".feed-card, .floor-single-card, .bili-feed-card, .bili-video-card";
-  const HOME_FEED_FEED_HEARTBEAT_TTL = 15e3;
-  const HOME_FEED_LAYOUT_FIX_ATTR = "data-bk-feed-layout";
-  const HOME_FEED_LAYOUT_MARGIN_ATTR = "data-bk-feed-layout-margin";
-  function clampHomeFeedNumber(value, min, max, fallback) {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return fallback;
-    return Math.min(max, Math.max(min, Math.round(number)));
-  }
-  function isAppFeedActive() {
-    let alive = 0;
-    try {
-      alive = Number(localStorage.getItem("bilikit:alive.feed") || 0);
-    } catch {
-    }
-    return Date.now() - alive < HOME_FEED_FEED_HEARTBEAT_TTL || !!document.querySelector(".bk-feed-fab");
-  }
-  const PC_WINDOW = 12e3;
-  let lastPc = -Infinity;
-  function getRuntimeCoordinator() {
-    const key = "__BILIKIT_PERFORMANCE_RUNTIME__";
-    const current = window[key];
-    if (current && !current.disposed) return current;
-    const cleanups = [];
-    const services = new Map();
-    const addGlobalCleanup = (cleanup) => trackCleanup(cleanups, cleanup);
-    const api = {
-      disposed: false,
-      installed: true,
-      addCleanup(cleanup) {
-        if (typeof cleanup !== "function") return () => {};
-        if (api.disposed) {
-          try { cleanup(); } catch {}
-          return () => {};
-        }
-        return trackCleanup(activeModuleCleanupScope || cleanups, cleanup);
-      },
-      addGlobalCleanup(cleanup) {
-        if (api.disposed) {
-          try { cleanup?.(); } catch {}
-          return () => {};
-        }
-        return addGlobalCleanup(cleanup);
-      },
-      listen(target, type, listener, options) {
-        target?.addEventListener?.(type, listener, options);
-        const untrack = api.addCleanup(() => target?.removeEventListener?.(type, listener, options));
-        return () => {
-          target?.removeEventListener?.(type, listener, options);
-          untrack();
-        };
-      },
-      createObserver(callback) {
-        if (typeof MutationObserver !== "function") return null;
-        const nativeObserver = new MutationObserver(callback);
-        const untrack = api.addCleanup(() => nativeObserver.disconnect());
-        return {
-          observe: (...args) => nativeObserver.observe(...args),
-          disconnect: () => nativeObserver.disconnect(),
-          disconnectAndForget: () => {
-            nativeObserver.disconnect();
-            untrack();
-          }
-        };
-      },
-      timeout(callback, delay) {
-        let active = true;
-        let untrack = () => {};
-        let timer = setTimeout(() => {
-          active = false;
-          untrack();
-          callback();
-        }, delay);
-        const cancel = () => {
-          if (!active) return;
-          active = false;
-          clearTimeout(timer);
-          timer = 0;
-          untrack();
-        };
-        untrack = api.addCleanup(cancel);
-        return { cancel };
-      },
-      frame(callback) {
-        let active = true;
-        let untrack = () => {};
-        const frame = requestAnimationFrame((time) => {
-          active = false;
-          untrack();
-          callback(time);
-        });
-        const cancel = () => {
-          if (!active) return;
-          active = false;
-          cancelAnimationFrame(frame);
-          untrack();
-        };
-        untrack = api.addCleanup(cancel);
-        return { cancel };
-      },
-      service(name, factory) {
-        if (services.has(name)) return services.get(name);
-        const previousScope = activeModuleCleanupScope;
-        activeModuleCleanupScope = null;
-        let service;
-        try {
-          service = factory(api);
-        } finally {
-          activeModuleCleanupScope = previousScope;
-        }
-        services.set(name, service);
-        if (typeof service?.dispose === "function") addGlobalCleanup(() => service.dispose());
-        return service;
-      },
-      networkHooks() {
-        return api.service("network-hooks", () => createBiliKitNetworkHookManager(window, history));
-      },
-      dispose() {
-        if (api.disposed) return;
-        api.disposed = true;
-        while (cleanups.length) {
-          try { cleanups.pop()(); } catch {}
-        }
-        services.clear();
-        try { delete window[key]; } catch {}
-      }
-    };
-    const onPageHide = (event) => {
-      if (!event.persisted) api.dispose();
-    };
-    window.addEventListener("pagehide", onPageHide);
-    addGlobalCleanup(() => window.removeEventListener("pagehide", onPageHide));
-    try {
-      Object.defineProperty(window, key, { configurable: true, value: api });
-    } catch {
-      window[key] = api;
-    }
-    return api;
-  }
   function getHomeFeedCoordinator() {
     if (!isHomeDocument()) return null;
     const runtime = getRuntimeCoordinator();
@@ -9233,6 +9799,401 @@
       if (window.__BILIKIT_HOME_IMAGE_CDN__) delete window.__BILIKIT_HOME_IMAGE_CDN__;
     });
   }
+  const HOME_PRECONNECT_HOSTS = ["https://s1.hdslb.com", "https://api.bilibili.com", "https://i0.hdslb.com", "https://api.vc.bilibili.com"];
+  // 信息流封面/横幅的优先级观察范围；CDN 改写本身会覆盖所有 i0/i1/i2 的 bfs 图片。
+  const BILI_MEDIA_IMAGE_RE = /^(?:https?:)?\/\/(?:i[0-2]\.)?hdslb\.com\/bfs\/(?:archive|banner|live|bangumi|feed-admin|sycp\/|upower\/|new_dyn\/|storyff\/)/i;
+  const BILI_CDN_IMAGE_RE = /^\/bfs\//i;
+  const HOME_IMAGE_HOSTS = ["i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com"];
+  const HOME_IMAGE_DEFAULT_HOST = "i0.hdslb.com";
+  const HOME_IMAGE_CACHE_KEY = "bilikit:home-image-cdn:v4";
+  const HOME_IMAGE_CACHE_FALLBACK_KEYS = [];
+  const HOME_IMAGE_CACHE_TTL = 15 * 60 * 1e3;
+  const HOME_FEED_PRELOAD_ROWS_DEFAULT = 6;
+  const HOME_FEED_PRELOAD_ROWS_MIN = 4;
+  const HOME_FEED_PRELOAD_ROWS_MAX = 10;
+  const HOME_FEED_AUTO_LOAD_DELAY = 3e3;
+  const HOME_FEED_AUTO_LOAD_ROWS_DEFAULT = 10;
+  const HOME_FEED_AUTO_LOAD_ROWS_MIN = 5;
+  const HOME_FEED_AUTO_LOAD_ROWS_MAX = 15;
+  const HOME_FEED_PRELOAD_MIN = 420;
+  const HOME_FEED_PRELOAD_MAX = 2600;
+  const HOME_FEED_PRELOAD_BATCH_MIN = 12;
+  const HOME_FEED_PRELOAD_BATCH_MAX = 36;
+  // 每次真实用户滚动后的闲置周期最多触发三次原生探测；没有新的实际滚动就不重置。
+  const HOME_FEED_AUTO_LOAD_MAX_PROBES = 3;
+  // 输入事件与对应 scroll 事件通常在同一帧内到达；窗口过长会把脚本自己的
+  // 后续滚动误认为用户继续操作，从而错误地重新开启闲置计时器。
+  const HOME_FEED_AUTO_LOAD_USER_INTENT_GRACE = 300;
+  const HOME_FEED_AUTO_LOAD_TIMEOUT = 8e3;
+  const HOME_FEED_AUTO_LOAD_RETRY_DELAY = 800;
+  const HOME_FEED_AUTO_LOAD_DOM_SETTLE = 120;
+  const HOME_FEED_AUTO_LOAD_INTERNAL_SCROLL_GRACE = 500;
+  const HOME_FEED_CARD_RE = /(?:^|\s)(?:feed-card|floor-single-card|bili-feed-card|bili-video-card)(?:\s|$)/;
+  const HOME_FEED_CARD_SELECTOR = ".feed-card, .floor-single-card, .bili-feed-card, .bili-video-card";
+  const HOME_FEED_FEED_HEARTBEAT_TTL = 15e3;
+
+  /* @bilikit-module:home-cover-preview */
+  // 真视频封面预览移植自 BiliKit-Web（MIT），只接管原生视频卡片的封面悬停，
+  // 不接管首页信息流、不克隆卡片，也不依赖独立的 BiliKit Feed 脚本。
+  const HOME_COVER_PREVIEW_STYLE_ID = "bilikit-home-cover-preview-style";
+  const HOME_COVER_PREVIEW_VIDEO_CLASS = "bk-native-vpreview";
+  const HOME_COVER_PREVIEW_DELAY = 500;
+  const HOME_COVER_PREVIEW_MAX_ACTIVE = 3;
+  const HOME_COVER_PREVIEW_CARD_SELECTOR = ".feed-card, .bili-feed-card, .bili-video-card";
+  const HOME_COVER_PREVIEW_STATS_KEY = "__BILIKIT_HOME_COVER_PREVIEW_STATS__";
+  function homeCoverPreviewRequestJson(url, timeout = 10000) {
+    return new Promise((resolve, reject) => {
+      let request = null;
+      let settled = false;
+      const finish = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(value);
+      };
+      const fail = (error) => finish(reject, error instanceof Error ? error : new Error(String(error || "预览请求失败")));
+      const timer = setTimeout(() => {
+        try { request?.abort?.(); } catch {}
+        fail(new Error("预览请求超时"));
+      }, Math.max(2000, Number(timeout) || 10000));
+      if (typeof GM_xmlhttpRequest !== "function") {
+        clearTimeout(timer);
+        reject(new Error("GM_xmlhttpRequest 不可用"));
+        return;
+      }
+      try {
+        request = GM_xmlhttpRequest({
+          method: "GET",
+          url,
+          headers: { Accept: "application/json", Referer: "https://www.bilibili.com/" },
+          responseType: "json",
+          timeout: Math.max(2000, Number(timeout) || 10000),
+          onload: (response) => {
+            if (Number(response.status) < 200 || Number(response.status) >= 300) {
+              fail(new Error(`预览接口返回 HTTP ${response.status}`));
+              return;
+            }
+            let value = response.response;
+            if (!value && response.responseText) {
+              try { value = JSON.parse(response.responseText); } catch { value = null; }
+            }
+            if (!value || typeof value !== "object") fail(new Error("预览接口没有返回 JSON"));
+            else finish(resolve, value);
+          },
+          onerror: () => fail(new Error("预览接口网络失败")),
+          ontimeout: () => fail(new Error("预览接口超时")),
+          onabort: () => fail(new Error("预览接口已取消"))
+        });
+      } catch (error) {
+        fail(error);
+      }
+    });
+  }
+  function homeCoverPreviewBvid(card) {
+    if (!(card instanceof Element)) return "";
+    const value = card.getAttribute("data-bvid") || card.querySelector("[data-bvid]")?.getAttribute("data-bvid") || "";
+    if (/^BV[0-9A-Za-z]+$/i.test(value)) return value;
+    const link = [...card.querySelectorAll("a[href]")].find((node) => /\/video\/BV[0-9A-Za-z]+/i.test(node.href || node.getAttribute("href") || ""));
+    const match = String(link?.href || link?.getAttribute("href") || "").match(/\/video\/(BV[0-9A-Za-z]+)/i);
+    return match?.[1] || "";
+  }
+  function homeCoverPreviewCard(node) {
+    if (!(node instanceof Element)) return null;
+    if (node.matches(HOME_COVER_PREVIEW_CARD_SELECTOR)) return node;
+    return node.closest(HOME_COVER_PREVIEW_CARD_SELECTOR);
+  }
+  function homeCoverPreviewCover(card) {
+    if (!(card instanceof Element)) return null;
+    const image = card.querySelector('a[href*="/video/"] img, img');
+    if (!(image instanceof HTMLImageElement)) return null;
+    if (image.closest(".recommended-swipe, .live-card, [class*='ad'], [class*='Ad']")) return null;
+    const preferred = image.closest(".bili-video-card__image--wrap, .bili-video-card__image, .bili-video-card__cover, .feed-card__cover, .feed-card-cover");
+    if (preferred instanceof HTMLElement) return preferred;
+    let current = image.parentElement;
+    for (let i = 0; current && i < 4; i += 1, current = current.parentElement) {
+      const rect = current.getBoundingClientRect?.();
+      if (rect && rect.width >= 160 && rect.height >= 80 && rect.width / Math.max(1, rect.height) > 1.2 && rect.width / Math.max(1, rect.height) < 2.4) return current;
+    }
+    return image.parentElement;
+  }
+  function homeCoverPreviewWriteStyle() {
+    if (document.getElementById(HOME_COVER_PREVIEW_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = HOME_COVER_PREVIEW_STYLE_ID;
+    style.textContent = `
+.${HOME_COVER_PREVIEW_VIDEO_CLASS}{position:absolute!important;inset:0!important;z-index:1!important;width:100%!important;height:100%!important;object-fit:cover!important;display:block!important;opacity:0!important;pointer-events:none!important;background:#000!important;border-radius:inherit!important;transition:opacity .2s ease!important}
+.${HOME_COVER_PREVIEW_VIDEO_CLASS}.on{opacity:1!important}
+@media(prefers-reduced-motion:reduce){.${HOME_COVER_PREVIEW_VIDEO_CLASS}{transition:none!important}}
+`;
+    (document.head || document.documentElement)?.appendChild(style);
+  }
+  async function homeCoverPreviewSources(bvid, knownCid) {
+    let cid = String(knownCid || "");
+    if (!cid) {
+      const page = await homeCoverPreviewRequestJson(`https://api.bilibili.com/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`);
+      cid = String(page?.data?.[0]?.cid || "");
+    }
+    if (!cid) throw new Error("没有找到视频 CID");
+    if (!readKeys()) {
+      try { await ensureKeys((url, options) => fetch(url, { ...options, credentials: "omit" }), 1500); } catch {}
+    }
+    const params = { bvid, cid, qn: 16, fnval: 1, fnver: 0, fourk: 0 };
+    const signed = signQuery(params);
+    const endpoint = signed
+      ? `https://api.bilibili.com/x/player/wbi/playurl?${signed}`
+      : `https://api.bilibili.com/x/player/playurl?${new URLSearchParams(params).toString()}`;
+    const payload = await homeCoverPreviewRequestJson(endpoint);
+    if (Number(payload?.code) !== 0) throw new Error(payload?.message || `播放接口错误 ${payload?.code ?? "unknown"}`);
+    const durl = Array.isArray(payload?.data?.durl) ? payload.data.durl : [];
+    const urls = [];
+    for (const item of durl) {
+      for (const url of [item?.url, ...(Array.isArray(item?.backup_url) ? item.backup_url : [])]) {
+        if (typeof url === "string" && /^https?:\/\//i.test(url) && !urls.includes(url)) urls.push(url);
+      }
+    }
+    // 某些返回只给 DASH；浏览器可以直接尝试 AVC 轨，失败时会进入下一候选。
+    if (!urls.length) {
+      const video = Array.isArray(payload?.data?.dash?.video) ? payload.data.dash.video : [];
+      const avc = video.find((item) => Number(item?.codecid) === 7) || video[0];
+      for (const url of [avc?.baseUrl || avc?.base_url, ...(avc?.backupUrl || avc?.backup_url || [])]) {
+        if (typeof url === "string" && /^https?:\/\//i.test(url) && !urls.includes(url)) urls.push(url);
+      }
+    }
+    if (!urls.length) throw new Error("播放接口没有返回可用视频地址");
+    return urls;
+  }
+  function installHomeCoverPreview() {
+    if (!(isHomePage() || isSearchPage()) || window.__BILIKIT_HOME_COVER_PREVIEW__) return;
+    window.__BILIKIT_HOME_COVER_PREVIEW__ = true;
+    const runtime = getRuntimeCoordinator();
+    const stats = {
+      enabled: true,
+      mode: get("feed.previewMode", "video"),
+      scannedCards: 0,
+      boundCards: 0,
+      activePreviews: 0,
+      requestCount: 0,
+      successCount: 0,
+      failureCount: 0,
+      lastError: "",
+      lastBvid: "",
+      lastSkipReason: ""
+    };
+    try {
+      Object.defineProperty(window, HOME_COVER_PREVIEW_STATS_KEY, { configurable: true, get: () => ({ ...stats }) });
+    } catch {}
+    let observer = null;
+    let feedUnsubscribe = null;
+    let mode = stats.mode;
+    let entries = new WeakMap();
+    const allEntries = new Set();
+    const active = [];
+    const removeActive = (entry) => {
+      const index = active.indexOf(entry);
+      if (index >= 0) active.splice(index, 1);
+      stats.activePreviews = active.length;
+    };
+    const registerActive = (entry) => {
+      removeActive(entry);
+      active.push(entry);
+      stats.activePreviews = active.length;
+      while (active.length > HOME_COVER_PREVIEW_MAX_ACTIVE) {
+        const index = active.findIndex((item) => !item.hovering);
+        if (index < 0) break;
+        active.splice(index, 1)[0].teardown();
+      }
+    };
+    const makeEntry = (cover, bvid, cid) => {
+      let hovering = false;
+      let timer = 0;
+      let generation = 0;
+      let video = null;
+      let sources = [];
+      let sourceIndex = 0;
+      const entry = {
+        get hovering() { return hovering; },
+        teardown() {
+          hovering = false;
+          generation += 1;
+          if (timer) clearTimeout(timer);
+          timer = 0;
+          removeActive(entry);
+          if (video) {
+            try { video.pause(); } catch {}
+            try { video.removeAttribute("src"); video.load(); } catch {}
+            video.remove();
+            video = null;
+          }
+          cover.classList.remove("bk-native-previewing");
+          if (cover.__bilikitPreviewTeardown === entry.teardown) delete cover.__bilikitPreviewTeardown;
+        },
+        dispose() {
+          cover.removeEventListener("mouseenter", start);
+          cover.removeEventListener("mouseleave", stop);
+          entry.teardown();
+          allEntries.delete(entry);
+        }
+      };
+      const ensureVideo = () => {
+        if (video) return video;
+        video = document.createElement("video");
+        video.className = HOME_COVER_PREVIEW_VIDEO_CLASS;
+        video.muted = true;
+        video.loop = true;
+        video.preload = "auto";
+        video.playsInline = true;
+        video.setAttribute("playsinline", "");
+        video.addEventListener("error", () => {
+          if (!hovering || sourceIndex + 1 >= sources.length) return;
+          sourceIndex += 1;
+          video.src = sources[sourceIndex];
+          video.load();
+          video.play().catch(() => {});
+        });
+        cover.appendChild(video);
+        return video;
+      };
+      const show = () => {
+        if (!video || !hovering) return;
+        cover.classList.add("bk-native-previewing");
+        video.classList.add("on");
+        registerActive(entry);
+        stats.successCount += 1;
+      };
+      const stop = () => {
+        hovering = false;
+        generation += 1;
+        if (timer) clearTimeout(timer);
+        timer = 0;
+        if (video) {
+          video.classList.remove("on");
+          try { video.pause(); } catch {}
+        }
+        cover.classList.remove("bk-native-previewing");
+        removeActive(entry);
+      };
+      const start = () => {
+        if (hovering || mode !== "video" || !cover.isConnected) return;
+        hovering = true;
+        const token = ++generation;
+        stats.requestCount += 1;
+        stats.lastBvid = bvid;
+        const sourcePromise = homeCoverPreviewSources(bvid, cid);
+        timer = setTimeout(async () => {
+          timer = 0;
+          if (!hovering || token !== generation || !cover.isConnected) return;
+          try {
+            sources = await sourcePromise;
+            if (!hovering || token !== generation || !cover.isConnected) return;
+            const target = ensureVideo();
+            sourceIndex = 0;
+            target.src = sources[sourceIndex];
+            target.load();
+            await target.play();
+            if (!hovering || token !== generation || !cover.isConnected) return;
+            show();
+          } catch (error) {
+            stats.failureCount += 1;
+            stats.lastError = error?.message || String(error);
+            if (video) video.remove();
+            video = null;
+          }
+        }, HOME_COVER_PREVIEW_DELAY);
+      };
+      cover.addEventListener("mouseenter", start);
+      cover.addEventListener("mouseleave", stop);
+      cover.__bilikitPreviewTeardown = entry.teardown;
+      runtime.addCleanup(() => {
+        entry.dispose();
+      });
+      stats.boundCards += 1;
+      allEntries.add(entry);
+      return entry;
+    };
+    const bind = (card) => {
+      if (!(card instanceof Element) || !card.isConnected) return;
+      const bvid = homeCoverPreviewBvid(card);
+      if (!bvid || card.matches(".floor-single-card, .recommended-swipe") || card.querySelector("video")) return;
+      const cover = homeCoverPreviewCover(card);
+      if (!(cover instanceof HTMLElement) || cover.querySelector(`.${HOME_COVER_PREVIEW_VIDEO_CLASS}`)) return;
+      const oldPosition = getComputedStyle(cover).position;
+      if (oldPosition === "static") cover.style.position = "relative";
+      if (getComputedStyle(cover).overflow === "visible") cover.style.overflow = "hidden";
+      const cid = card.getAttribute("data-cid") || card.querySelector("[data-cid]")?.getAttribute("data-cid") || "";
+      const entry = makeEntry(cover, bvid, cid);
+      entries.set(card, entry);
+    };
+    const scan = (root) => {
+      if (!(root instanceof Element) && !(root instanceof Document)) return;
+      const cards = [];
+      if (root instanceof Element) {
+        const card = homeCoverPreviewCard(root);
+        if (card) cards.push(card);
+      }
+      root.querySelectorAll?.(HOME_COVER_PREVIEW_CARD_SELECTOR).forEach((card) => cards.push(card));
+      for (const card of new Set(cards)) {
+        stats.scannedCards += 1;
+        if (!entries.has(card)) bind(card);
+      }
+    };
+    const clear = (reason = "disabled") => {
+      observer?.disconnect();
+      observer = null;
+      feedUnsubscribe?.();
+      feedUnsubscribe = null;
+      for (const entry of [...allEntries]) entry.dispose();
+      allEntries.clear();
+      entries = new WeakMap();
+      document.querySelectorAll(`.${HOME_COVER_PREVIEW_VIDEO_CLASS}`).forEach((node) => node.remove());
+      document.getElementById(HOME_COVER_PREVIEW_STYLE_ID)?.remove();
+      stats.activePreviews = 0;
+      stats.lastSkipReason = reason;
+    };
+    const applyMode = (nextMode) => {
+      const normalized = ["video", "sprite", "off"].includes(nextMode) ? nextMode : "video";
+      if (normalized === mode && (normalized !== "video" || observer || feedUnsubscribe)) return;
+      clear(normalized === "video" ? "rebind" : `${normalized}-mode`);
+      mode = normalized;
+      stats.mode = normalized;
+      if (normalized !== "video") return;
+      homeCoverPreviewWriteStyle();
+      const feedCoordinator = getHomeFeedCoordinator();
+      if (feedCoordinator) feedUnsubscribe = feedCoordinator.subscribe((event) => {
+        scan(event.root);
+        for (const node of event.addedNodes) scan(node);
+      });
+      if (!feedCoordinator && typeof MutationObserver === "function") {
+        observer = new MutationObserver((mutations) => {
+          for (const mutation of mutations) for (const node of mutation.addedNodes) scan(node);
+        });
+        observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+      }
+      scan(document.querySelector(".container.is-version8") || document.body || document.documentElement);
+    };
+    runtime.listen(window, SETTINGS_EVENT, () => applyMode(get("feed.previewMode", "video")));
+    applyMode(mode);
+    runtime.addCleanup(() => {
+      clear("disposed");
+      if (window[HOME_COVER_PREVIEW_STATS_KEY]) delete window[HOME_COVER_PREVIEW_STATS_KEY];
+      if (window.__BILIKIT_HOME_COVER_PREVIEW__) delete window.__BILIKIT_HOME_COVER_PREVIEW__;
+    });
+  }
+  /* @bilikit-module-end:home-cover-preview */
+  function clampHomeFeedNumber(value, min, max, fallback) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(number)));
+  }
+  function isAppFeedActive() {
+    let alive = 0;
+    try {
+      alive = Number(localStorage.getItem("bilikit:alive.feed") || 0);
+    } catch {
+    }
+    return Date.now() - alive < HOME_FEED_FEED_HEARTBEAT_TTL || !!document.querySelector(".bk-feed-fab");
+  }
+  const PC_WINDOW = 12e3;
+  let lastPc = -Infinity;
   function preconnect(hosts = PC_HOSTS) {
     const root = document.head || document.documentElement;
     if (!root) return;
@@ -9271,148 +10232,149 @@
   function installHomeFeedLayoutStability() {
     if (!isHomePage() || window.__BILIKIT_HOME_FEED_LAYOUT__) return;
     window.__BILIKIT_HOME_FEED_LAYOUT__ = true;
-    const style = document.createElement("style");
-    style.textContent = [
-      `.container.is-version8 > [${HOME_FEED_LAYOUT_FIX_ATTR}="1"],.container.is-version8 > [${HOME_FEED_LAYOUT_MARGIN_ATTR}="0"]{margin-top:0!important}`,
-      `.container.is-version8 > [${HOME_FEED_LAYOUT_MARGIN_ATTR}="24"]{margin-top:24px!important}`,
-      `.container.is-version8 > [${HOME_FEED_LAYOUT_MARGIN_ATTR}="40"]{margin-top:40px!important}`
-    ].join("");
-    const appendStyle = () => {
-      const root = document.head || document.documentElement;
-      if (root && !style.isConnected) root.appendChild(style);
-    };
     const runtime = getRuntimeCoordinator();
-    runtime.listen(document, "DOMContentLoaded", appendStyle, { once: true });
-    appendStyle();
-    runtime.addCleanup(() => style.remove());
-    const originalMargins = new WeakMap();
     const stats = {
       enabled: true,
+      mode: "native-passive",
+      stableFrames: 0,
+      samples: 0,
+      resizeEvents: 0,
+      mutationEvents: 0,
+      cardCount: 0,
+      rowCount: 0,
+      columnCount: 0,
+      layoutDeferredDuringAutoLoad: 0,
+      layoutResumeRepairs: 0,
       normalizedCount: 0,
       lastNormalizedCount: 0,
       normalizedRows: 0,
-      layoutDeferredDuringAutoLoad: 0,
-      layoutResumeRepairs: 0,
-      lastRepairReason: "initial"
+      lastRepairReason: "native-layout",
+      lastSampleReason: "initial",
+      writes: 0
     };
     try {
       Object.defineProperty(window, "__BILIKIT_HOME_LAYOUT_STATS__", { configurable: true, get: () => ({ ...stats }) });
     } catch {
     }
+    // B 站会给部分首页网格子项附加 24px/40px 的上边距，混合
+    // recommended-swipe、feed-card 和新版 bili-video-card 时会造成同一行错位。
+    // 只覆盖网格层的直接卡片，不接管列数、行数或滚动，也不改写卡片属性。
+    const spacingStyle = document.createElement?.("style");
+    if (spacingStyle) {
+      spacingStyle.dataset.bilikit = "home-native-spacing";
+      spacingStyle.textContent = ".container.is-version8 > .feed-card,.container.is-version8 > .floor-single-card,.container.is-version8 > .bili-feed-card,.container.is-version8 > .bili-video-card{margin-top:0!important}";
+      const appendSpacingStyle = () => {
+        const target = document.head || document.documentElement;
+        if (target && !spacingStyle.isConnected) target.appendChild(spacingStyle);
+      };
+      appendSpacingStyle();
+      runtime.listen(document, "DOMContentLoaded", appendSpacingStyle, { once: true });
+      runtime.addCleanup(() => spacingStyle.remove());
+    }
     const feedCoordinator = getHomeFeedCoordinator();
-    const layoutCleanup = runtime.addCleanup(() => {
-      if (window.__BILIKIT_HOME_FEED_LAYOUT__) delete window.__BILIKIT_HOME_FEED_LAYOUT__;
-    });
+    const layoutCoordinator = getHomeFeedLayoutCoordinator();
     let pending = false;
+    let frameHandle = null;
     let feedRoot = null;
     let lastSignature = "";
     let scheduledReason = "initial";
+    let resizeObserver = null;
+    let mutationObserver = null;
+    let observedCards = new Set();
     const CARD_RE = /(?:^|\s)(?:feed-card|floor-single-card|bili-feed-card|bili-video-card|load-more-anchor)(?:\s|$)/;
-    const layoutCoordinator = getHomeFeedLayoutCoordinator();
-    const schedule = (reason = "feed-update") => {
-      if (layoutCoordinator?.defer(reason)) {
-        stats.layoutDeferredDuringAutoLoad = layoutCoordinator.getStats().deferredCount;
+    const getCards = (root) => [...root?.children || []].filter((element) => {
+      return CARD_RE.test(String(element.className || ""))
+        && getComputedStyle(element).display !== "none"
+        && element.offsetWidth > 0;
+    });
+    const readSnapshot = (root) => {
+      const cards = getCards(root);
+      const rows = [];
+      const columns = [];
+      const positions = cards.map((element, index) => {
+        const rect = element.getBoundingClientRect();
+        const top = Math.round(rect.top * 2) / 2;
+        const left = Math.round(rect.left * 2) / 2;
+        if (!rows.some((value) => Math.abs(value - top) < 8)) rows.push(top);
+        if (!columns.some((value) => Math.abs(value - left) < 8)) columns.push(left);
+        return `${index}:${top},${left},${Math.round(rect.width * 2) / 2},${Math.round(rect.height * 2) / 2}`;
+      });
+      rows.sort((a, b) => a - b);
+      columns.sort((a, b) => a - b);
+      return { cards, rows, columns, signature: positions.join("|") };
+    };
+    const observeCards = (root) => {
+      if (!resizeObserver) return;
+      const active = new Set(getCards(root));
+      for (const element of observedCards) if (!active.has(element)) resizeObserver.unobserve(element);
+      for (const element of active) if (!observedCards.has(element)) resizeObserver.observe(element);
+      observedCards = active;
+    };
+    const syncObservers = (root) => {
+      if (!root || root === feedRoot) {
+        observeCards(root);
         return;
       }
-      if (pending) return;
-      scheduledReason = reason;
-      pending = true;
-      runtime.frame(apply);
+      mutationObserver?.disconnect();
+      resizeObserver?.disconnect();
+      mutationObserver = null;
+      resizeObserver = null;
+      observedCards = new Set();
+      feedRoot = root;
+      if (typeof ResizeObserver === "function") {
+        resizeObserver = new ResizeObserver((entries) => {
+          stats.resizeEvents += entries.length;
+          schedule("resize");
+        });
+        resizeObserver.observe(root);
+        runtime.addCleanup(() => resizeObserver?.disconnect());
+      }
+      if (typeof MutationObserver === "function") {
+        mutationObserver = new MutationObserver((mutations) => {
+          stats.mutationEvents += mutations.length;
+          schedule("native-mutation");
+        });
+        mutationObserver.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["class", "style", "hidden", "aria-hidden"]
+        });
+        runtime.addCleanup(() => mutationObserver?.disconnect());
+      }
+      observeCards(root);
     };
     const apply = () => {
       pending = false;
-      if (layoutCoordinator?.isPaused()) {
-        layoutCoordinator.defer("apply-paused");
-        stats.layoutDeferredDuringAutoLoad = layoutCoordinator.getStats().deferredCount;
-        return;
-      }
-      const repairReason = scheduledReason;
-      scheduledReason = "feed-update";
+      frameHandle = null;
       const root = feedRoot && feedRoot.isConnected ? feedRoot : document.querySelector(".container.is-version8");
       if (!root) return;
-      if (root !== feedRoot) {
-        feedRoot = root;
-        lastSignature = "";
+      syncObservers(root);
+      const snapshot = readSnapshot(root);
+      stats.samples += 1;
+      stats.cardCount = snapshot.cards.length;
+      stats.rowCount = snapshot.rows.length;
+      stats.columnCount = snapshot.columns.length;
+      stats.lastSampleReason = scheduledReason;
+      stats.layoutDeferredDuringAutoLoad = layoutCoordinator?.getStats?.().deferredCount || 0;
+      if (snapshot.signature === lastSignature) {
+        stats.stableFrames += 1;
+      } else {
+        stats.stableFrames = 1;
+        lastSignature = snapshot.signature;
       }
-      const children = [...root.children];
-      // 按整页网格的逻辑行处理，而不是只处理首个推荐楼层。
-      // B 站不同楼层混用了 0/24/40px 顶部间距，导致第三排开始错位。
-      const candidates = children.filter((el) => {
-        return CARD_RE.test(String(el.className || "")) && getComputedStyle(el).display !== "none" && el.offsetWidth > 0;
-      });
-      const active = new Set(candidates);
-      root.querySelectorAll(`:scope > [${HOME_FEED_LAYOUT_FIX_ATTR}="1"], :scope > [${HOME_FEED_LAYOUT_MARGIN_ATTR}]`).forEach((el) => {
-        if (!active.has(el)) {
-          el.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
-          el.removeAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
-          originalMargins.delete(el);
-        }
-      });
-      const rows = new Map();
-      for (const element of candidates) {
-        let margin = originalMargins.get(element);
-        // 数据属性不会被 B 站悬停预览的 class/style 重绘覆盖；保留首次记录的
-        // 原始间距，避免 CSS 修复值把网格行误判成已统一。
-        if (margin == null) {
-          margin = Number.parseFloat(getComputedStyle(element).marginTop) || 0;
-          originalMargins.set(element, margin);
-        }
-        // offsetTop 包含当前卡片自己的 margin；减去原始 margin 后可识别
-        // 同一 CSS Grid 行中混用 0/24/40px 的卡片。
-        const rowTop = Math.round((element.offsetTop - margin) * 10) / 10;
-        if (!rows.has(rowTop)) rows.set(rowTop, []);
-        rows.get(rowTop).push({ element, margin });
-      }
-      const signature = [...rows.entries()].map(([rowTop, row]) => {
-        return `${rowTop}:${row.map((item) => `${children.indexOf(item.element)}=${item.margin}`).join(",")}`;
-      }).join("|");
-      let needsRepair = false;
-      for (const row of rows.values()) {
-        const targetMargin = Math.min(...row.map((item) => item.margin));
-        const mixed = row.some((item) => Math.abs(item.margin - targetMargin) > 1);
-        for (const item of row) {
-          const shouldNormalize = mixed && Math.abs(item.margin - targetMargin) > 1;
-          const marker = item.element.getAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
-          if (shouldNormalize && marker !== String(Math.round(targetMargin))) {
-            needsRepair = true;
-          } else if (!shouldNormalize && (item.element.hasAttribute(HOME_FEED_LAYOUT_FIX_ATTR) || item.element.hasAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR))) {
-            needsRepair = true;
-          }
-        }
-      }
-      // 签名相同不代表外部代码没有移除我们之前写入的稳定样式；
-      // 只有在布局签名和实际修复状态都未变化时才跳过本轮。
-      if (signature === lastSignature && !needsRepair) return;
-      stats.lastRepairReason = repairReason;
-      if (repairReason.startsWith("resume:")) stats.layoutResumeRepairs += 1;
-      lastSignature = signature;
-      let normalizedCount = 0;
-      let normalizedRows = 0;
-      for (const row of rows.values()) {
-        const targetMargin = Math.min(...row.map((item) => item.margin));
-        const mixed = row.some((item) => Math.abs(item.margin - targetMargin) > 1);
-        if (mixed) normalizedRows += 1;
-        for (const item of row) {
-          const shouldNormalize = mixed && Math.abs(item.margin - targetMargin) > 1;
-          if (shouldNormalize) {
-            const target = String(Math.round(targetMargin));
-            if (target === "0") item.element.setAttribute(HOME_FEED_LAYOUT_FIX_ATTR, "1");
-            else item.element.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
-            item.element.setAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR, target);
-            normalizedCount += 1;
-          } else {
-            item.element.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
-            item.element.removeAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
-          }
-        }
-      }
-      stats.normalizedCount = normalizedCount;
-      stats.lastNormalizedCount = normalizedCount;
-      stats.normalizedRows = normalizedRows;
+      if (scheduledReason.startsWith("resume:")) stats.layoutResumeRepairs += 1;
+      if (stats.stableFrames < 2) schedule("stabilize");
+    };
+    const schedule = (reason = "feed-update") => {
+      scheduledReason = reason;
+      if (pending) return;
+      pending = true;
+      frameHandle = runtime.frame(apply);
     };
     const unsubscribe = feedCoordinator?.subscribe(({ root, rootChanged, addedNodes, reason }) => {
-      if (rootChanged || !feedRoot?.isConnected) feedRoot = root;
-      if (rootChanged || addedNodes.length || reason === "resize") schedule(reason || "feed-update");
+      if (rootChanged || !feedRoot?.isConnected || root !== feedRoot) syncObservers(root);
+      if (rootChanged || addedNodes.length || reason === "resize" || reason === "resource-change") schedule(reason || "feed-update");
     });
     runtime.addCleanup(unsubscribe);
     const unsubscribeResume = layoutCoordinator?.onResume(({ reason }) => {
@@ -9421,11 +10383,11 @@
     });
     runtime.addCleanup(unsubscribeResume);
     runtime.addCleanup(() => {
-      for (const element of feedRoot?.querySelectorAll?.(`[${HOME_FEED_LAYOUT_FIX_ATTR}], [${HOME_FEED_LAYOUT_MARGIN_ATTR}]`) || []) {
-        element.removeAttribute(HOME_FEED_LAYOUT_FIX_ATTR);
-        element.removeAttribute(HOME_FEED_LAYOUT_MARGIN_ATTR);
-      }
-      layoutCleanup();
+      frameHandle?.cancel();
+      mutationObserver?.disconnect();
+      resizeObserver?.disconnect();
+      if (window.__BILIKIT_HOME_FEED_LAYOUT__) delete window.__BILIKIT_HOME_FEED_LAYOUT__;
+      if (window.__BILIKIT_HOME_LAYOUT_STATS__) delete window.__BILIKIT_HOME_LAYOUT_STATS__;
     });
     schedule();
   }

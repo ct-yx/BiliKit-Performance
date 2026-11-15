@@ -386,6 +386,65 @@ if (selectedMixedItems.map((entry) => entry.downloadScope).join(",") !== "collec
   throw new Error(`合集视频、其中 P 与同 BV 普通分 P 不能同时独立选择：${JSON.stringify(selectedMixedItems)}`);
 }
 
+// 公开收藏夹由目录接口直接提供合集根条目；即使只有一个收藏视频，
+// 也必须保持 C01 身份，不能被普通分 P 合并逻辑吞掉。
+const favoritesBasePage = {
+  videoId: "BV1FavoriteSingle",
+  bvid: "BV1FavoriteSingle",
+  aid: "20001",
+  cid: "80001",
+  page: 1,
+  title: "收藏单 P",
+  filenameTitle: "测试公开收藏夹",
+  collectionTitle: "测试公开收藏夹",
+  collectionRootTitle: "测试公开收藏夹",
+  downloadScope: "collection",
+  favoritesMode: true
+};
+const favoritesEntries = [
+  {
+    collectionIndex: 1,
+    bvid: "BV1FavoriteSingle",
+    aid: "20001",
+    title: "收藏单 P",
+    part: "正片",
+    cid: "80001",
+    pages: [{ page: 1, cid: "80001", part: "正片", duration: 60 }],
+    collectionTitle: "测试公开收藏夹",
+    collectionRootTitle: "测试公开收藏夹",
+    downloadScope: "collection",
+    favoritesMode: true
+  },
+  {
+    collectionIndex: 2,
+    bvid: "BV1FavoriteMulti",
+    aid: "20002",
+    title: "收藏多 P",
+    pages: [
+      { page: 1, cid: "81001", part: "第一 P", duration: 70 },
+      { page: 2, cid: "81002", part: "第二 P", duration: 80 }
+    ],
+    collectionTitle: "测试公开收藏夹",
+    collectionRootTitle: "测试公开收藏夹",
+    downloadScope: "collection",
+    favoritesMode: true
+  }
+];
+const favoritesList = buildDownloadVideoList([], favoritesEntries, favoritesBasePage);
+if (favoritesList.map((entry) => entry.label).join(",") !== "C01,C02_P01,C02_P02") {
+  throw new Error(`公开收藏夹单项/多 P 标识错误：${JSON.stringify(favoritesList)}`);
+}
+if (favoritesList.length !== 3 || favoritesList.some((entry) => entry.downloadScope !== "collection" || entry.favoritesMode !== true)) {
+  throw new Error(`公开收藏夹列表没有保持合集模式：${JSON.stringify(favoritesList)}`);
+}
+if (favoritesList.find((entry) => entry.label === "C02_P02")?.bvid !== "BV1FavoriteMulti" || favoritesList.find((entry) => entry.label === "C02_P02")?.cid !== "81002") {
+  throw new Error(`公开收藏夹多 P 没有保留独立 BV/CID：${JSON.stringify(favoritesList)}`);
+}
+const singleFavoritesList = buildDownloadVideoList([], [favoritesEntries[0]], favoritesBasePage);
+if (singleFavoritesList.length !== 1 || singleFavoritesList[0].label !== "C01" || singleFavoritesList[0].downloadScope !== "collection") {
+  throw new Error(`只有一个视频的公开收藏夹没有生成 C01：${JSON.stringify(singleFavoritesList)}`);
+}
+
 // 工作台打开时一次复用当前 BV 的 view 响应，同时生成普通 pages 与合集叶子；
 // 不应为两个目录并行发送两次相同的官方 view 请求。
 let viewRequestCount = 0;
@@ -401,6 +460,10 @@ const bundle = await fetchDownloadCatalogBundle(basePage, {}, [
 ], []);
 if (viewRequestCount !== 1 || bundle.catalog.length !== 4 || bundle.collection.length !== 5) {
   throw new Error(`合集与分 P目录没有复用单次 view 响应：${JSON.stringify({ viewRequestCount, catalog: bundle.catalog.length, collection: bundle.collection.length })}`);
+}
+const favoritesBundle = await fetchDownloadCatalogBundle(favoritesBasePage, {}, [], favoritesEntries);
+if (viewRequestCount !== 1 || favoritesBundle.collection.length !== favoritesEntries.length) {
+  throw new Error(`收藏夹工作台错误地重新抓取或覆盖了公开目录：${JSON.stringify({ viewRequestCount, collection: favoritesBundle.collection.length })}`);
 }
 
 // 全选 689 个叶子项时，官方身份解析有边界，但分轨在释放闸门后可以

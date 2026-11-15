@@ -419,9 +419,8 @@
       if (!resolve(e.target)) return;
       preconnect();
     };
-    // 搜索页已在加载早期预连接，不再为原生悬停预览和结果列表安装全局 mouseover 监听。
-    // 首页已在 document-start 预连接首屏域名，不再为每次悬停执行一次命中查询。
-    // 不改变 B 站原生预览，只移除 BiliKit 自身重复的预连接监听。
+    // 搜索页在站点抽屉初始化时完成独立预连接，不再为原生悬停预览和结果列表安装全局 mouseover 监听。
+    // 不改变 B 站原生预览，也不在首页增加资源或滚动监听。
     if (!homePage && !searchPage && !playPage) runtime.listen(document, "mouseover", onHover, true);
     runtime.addCleanup(() => {
       if (window.__BILIKIT_SITE_DRAWER__) delete window.__BILIKIT_SITE_DRAWER__;
@@ -874,6 +873,7 @@
     homeFeedLoad,
     themeSync,
     commentLocation,
+    commentObfuscatedLinks,
     wakeLock,
     // 下载捕获器必须先于免登录网络钩子初始化：它需要读取首份 SSR/playurl
     // 响应，但仍由下载工作台自己的 init/dispose 生命周期统一管理。
@@ -889,6 +889,7 @@
   installHomePreconnect();
   installHomeImageCdn();
   installHomeFeedLayoutStability();
+  installHomeCoverPreview();
   runAll();
   installSiteDrawer();
   installQuickDownloadEntry();

@@ -1,8 +1,8 @@
 # BiliKit Performance
 
-面向 Bilibili 的 Edge / Chromium userscript，优化首页信息流、搜索页和播放页的网络调度与 CDN 使用。
+面向 Bilibili 的 Edge / Chromium userscript，提供播放交互、下载工作台、收藏夹修复和桌面端首页增强能力。
 
-当前版本：**0.7.2**
+当前版本：**0.7.3**
 
 脚本文件：[bilikit-performance.user.js](bilikit-performance.user.js)
 
@@ -20,18 +20,10 @@
 
 ### 首页信息流
 
-- 在 `document-start` 阶段预连接首页常用接口和图片域名。
-- 提升首页推荐接口、播放接口的请求优先级；辅助接口使用较低优先级，减少首屏竞争。
-- 首页推荐只对幂等的 `GET` / `HEAD` 请求处理网络错误或明确的 `5xx`，最多进行一次短延迟重试；保留原始 `Request`、请求头、凭据、`signal` 和 `init` 参数，不定时中止正常请求。
-- 通过统一的首页 Feed 协调器处理新增卡片和图片资源，避免多个全页面观察器重复扫描。
-- 默认隐藏首页信息流中的 `.floor-single-card` 广告楼层；不隐藏普通视频卡片，不修改视频悬停预览。
-- 首屏可见封面使用较高图片优先级；视口下方默认预加载约 6 行，可在设置中调整为 4–10 行。预加载使用低优先级和有限队列，不抢占首页推荐接口。
-- 只预加载封面，不改写视频预览内容。
-- 真实下滑后停止约 3 秒，原生首页会按设置尝试自动加载后续内容，默认 10 行，可调整为 5–15 行；每次停留周期最多触发 3 次原生加载探测，完成后必须继续实际滚动才会开始下一轮。
-- 自动加载探测使用同步触发并立即恢复位置的方式；加载批次期间暂缓首页格式修复，批次结束后集中修复一次，避免页面反复下跳和上提。
-- 如果同步探测没有追加内容，本轮会有限重试后跳过，不使用下一帧可见滚动兜底。
-- 检测到配套 BiliKit Feed 后，自动加载功能会停用，不调用 Feed 私有加载器，也不改动 Feed 脚本。
-- 通过稳定的网格行间距处理减少第三排开始的错位、上下抖动和频闪；不监听卡片内部的 `class` / `style` 变化来触发布局修复。
+- 首页保留 B 站原生卡片排布、展示位、推荐顺序和滚动加载；脚本不接管横向列数或纵向行数，不使用 CSS Grid 重排，也不改写滚动位置。
+- 首页增强只做小范围优化：稳定识别的广告卡片默认删除、封面预加载、图片节点优化、请求预连接和原生布局稳定性保护；脚本不改写卡片属性、grid 或列数，只在首页网格直接卡片上清除 B 站额外的上边距，广告、预加载和自动加载协调均可在设置中独立关闭。
+- 停止滚动后的自动加载仅通过 B 站原生入口进行有限协调，不自行渲染接口结果，不克隆卡片，不伪造 `scroll` 事件；检测到 BiliKit Feed 时自动让路。
+- 首页调试信息可从 `window.__BILIKIT_HOME_FEED_STATS__`、`window.__BILIKIT_HOME_FEED_COORDINATOR_STATS__`、`window.__BILIKIT_HOME_FEED_PRIORITY_STATS__`、`window.__BILIKIT_HOME_AUTO_LOAD_STATS__`、`window.__BILIKIT_HOME_LAYOUT_STATS__` 和 `window.__BILIKIT_HOME_AD_STATS__` 查看。
 
 ### 搜索页
 
@@ -41,13 +33,10 @@
 
 ### CDN 优选
 
-CDN 处理分为图片和播放资源两条路径：
+CDN 优选当前只处理播放资源：
 
 - 根据 B 站返回的 IP 地域信息区分国内和境外出口；地域尚未确认时保持 B 站原始地址。
-- 图片节点在 `i0` / `i1` / `i2.hdslb.com` 中进行实际探测，并复用短期缓存，避免每次刷新都重复测速。
-- 网络恢复或连接类型变化后才重新选择节点；连续资源失败后才切换后续请求使用的节点。
-- 已经加载完成并正在显示的图片不会为了换节点而重新下载；加载中的资源或新加入信息流的资源才会按当前节点处理。
-- 播放页、首页和搜索页的精确 `playurl` 响应会处理可替换的 `bilivideo` 直连地址，也覆盖 B 站原生悬停预览的播放地址。
+- 播放页和悬停预览的精确 `playurl` 响应会处理可替换的 `bilivideo` 直连地址。
 - MCDN / `edge.mountaintoys.cn` 等带签名的代理地址不会被简单替换 Host；如果 B 站返回了签名完整的直连备用地址，会优先使用该备用地址并保留原代理回退。
 - 不扫描普通 JSON，不伪造 MCDN 签名，不改变清晰度、预览内容或播放器交互。
 
@@ -58,11 +47,14 @@ CDN 处理分为图片和播放资源两条路径：
 - 播放页左下角提供“回程”胶囊，记录视频导航栈，可跳回上一个视频并按需要恢复离开时的进度。
 - 正式播放时可申请 Screen Wake Lock，防止支持该 API 的浏览器在播放过程中休眠；悬停预览不会申请唤醒锁。
 - “稍后再看”“不感兴趣”“更多”等按钮会放行给 B 站原生处理，不由卡片打开逻辑截断。
+- 免登录模块可以分别控制免登录评论区和免登录 1080p；首次播放请求会等待 WBI 密钥，避免首个请求落入低清路径。
+- 评论区会识别用 Unicode Emoji 或 B 站表情拆开的 HTTPS 链接，并在旁边提供新标签页跳转按钮；该功能可通过“评论链接识别”模块关闭。
 
 ### 下载工作台
 
 - 播放器右键菜单仍可打开下载工作台；Bilibili 顶栏新增“下载”入口，顶栏空间不足时自动降级到右下角 BiliKit 设置按钮上方的悬浮入口。
 - 输入完整 BV 号或 BV 后面的字母数字正文后，工作台会通过 B 站官方 `view` / `playurl` 接口读取分 P、CID 和 DASH 音视频轨道；下载入口不需要额外 userscript 权限。
+- 普通多 P 的官方 `view.pages` 是最终 CID 目录；如果播放器旧目录的 CID 不同，工作台会按官方 page→CID 映射修正并继续下载，不会误标为“已跳过”。
 
 ### 收藏夹修复
 
@@ -76,7 +68,8 @@ CDN 处理分为图片和播放资源两条路径：
 - 只在当前收藏模块已经接管的卡片标题区域做局部清理；如果旧版脚本再次写回加载占位，BiliKit 会清除该占位，但仍建议停用重复安装的旧版收藏夹脚本。
 - 卡片右上角的 BiliKit 菜单可复制视频信息、查看有效封面、打开 UP 主空间和清除单条本地缓存；不拦截 B 站原生跳转、稍后再看和收藏操作。
 - 缓存键为 `bilikit:favorites-fix:v1`，只保存公开元数据和有限时间的命中/未命中状态，不保存 Cookie、签名 URL、媒体 URL 或第三方脚本代码；未命中结果会在一段时间后重试。可在设置中的“收藏夹修复”模块关闭隐藏条目恢复或卡片工具菜单。
-- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()`，返回带 `bvid`、`aid`、标题、分 P/CID、时长、UP 主和 `source: "public"` 的标准目录，供后续批量下载复用；当前版本暂不自动下载整个收藏夹。
+- 公开收藏夹页提供 `window.__BILIKIT_FAVORITES_FIX_API__.getEntries()`，返回带 `bvid`、`aid`、标题、分 P/CID、时长、UP 主和 `source: "public"` 的标准目录；页面右下角的“打开收藏下载”入口会把该目录交给现有下载工作台。
+- 收藏下载只读取公开收藏夹，保留收藏顺序，支持单 P、多 P 和多 BV 选择；每个任务按自己的 BVID/CID 重新获取官方 `view` / `playurl`，失败项可以单独重试。可在“收藏夹修复”设置中关闭“提供收藏夹批量下载入口”。
 
 ## 设置面板
 
@@ -86,26 +79,22 @@ CDN 处理分为图片和播放资源两条路径：
 
 | 模块 | 默认状态 | 作用 |
 | --- | --- | --- |
-| CDN 优选 | 开启 | 选择国内/境外播放和图片节点，并处理失败回退 |
+| CDN 优选 | 开启 | 选择国内/境外播放节点，并处理失败回退 |
 | 主题同步 | 开启 | 跟随系统深浅色，或强制深色/浅色 |
 | 评论信息 | 开启 | 在评论中显示已有的性别数据和 IP 属地 |
 | 防睡眠 | 开启 | 正式播放时申请屏幕唤醒锁 |
 | 免登录 | 开启 | 未登录时提供评论、他人动态和官方试看 1080p |
 | 回程 | 开启 | 保存视频导航栈，并可带播放进度返回 |
-| 首页加载 | 开启 | 隐藏首页广告位，配置封面预加载行数和停止滚动后的原生首页自动加载 |
+| 评论链接识别 | 开启 | 识别评论中用 Emoji/表情拆开的 HTTPS 链接并新开标签页 |
+| 首页加载 | 开启 | 删除广告、预加载封面，并协调 B 站原生首页追加 |
 
 此外还有三个独立设置页：
 
 - **打开方式**：抽屉、抽屉·网页全屏、新标签页（默认）或当前页；网页全屏可以选择隐藏切换过程。Safari 另有实验性的“左滑回到来源页”历史处理，Edge/Chrome/Firefox 不会改变历史。
-- **封面预览**：为配套 BiliKit Feed 脚本提供“真视频 / 雪碧图 / 关闭”配置。BiliKit Performance 本身不替换 B 站原生悬停预览。
+- **封面预览**：Performance 直接为 B 站首页和搜索页的原生视频卡片提供“真视频 / 雪碧图 / 关闭”配置；真视频预览使用 B 站播放接口和静音低清流，不依赖独立 BiliKit Feed 脚本。
 - **App 推荐 Feed**：可选的 BiliKit Feed 配置入口，需要另行安装对应 Feed 脚本；可以使用 TV 二维码登录获取个性化推荐。
 
-首页加载可以进一步设置：
-
-- 隐藏首页广告位：默认开启，只处理首页信息流中的 `.floor-single-card`。
-- 封面预加载行数：默认 6 行，范围 4–10 行。
-- 停止滚动后自动加载：默认开启，真实下滑后停止约 3 秒触发原生首页加载；每次停留周期最多 3 次探测，继续实际滚动后重新计数。
-- 自动加载行数：默认 10 行，范围 5–15 行。
+首页加载设置位于设置面板中：可以关闭广告删除、调整封面预加载行数、关闭停止滚动后的原生自动加载，并设置每轮自动加载的目标行数。页面卡片的横向列数、纵向行数和顶部展示位始终由 B 站原生逻辑决定。
 
 CDN 优选可以进一步设置：
 
@@ -122,11 +111,11 @@ CDN 优选可以进一步设置：
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或其他兼容的 userscript 管理器。
 2. 从 [Raw 地址安装或更新](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)。
-3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.7.2`。
+3. 打开 Bilibili 页面，确认脚本管理器中的脚本名称为 `BiliKit Performance (Edge/Chromium)`，版本为 `0.7.3`。
 
 本项目使用新的脚本名称和 namespace，是独立于旧版 BiliKit Core 的新脚本身份。旧版不会自动升级到本仓库；安装前请先停用旧版，避免两个脚本同时 hook 请求、重复修改页面或产生不稳定行为。
 
-脚本 metadata 仅匹配 Bilibili，并声明 Tampermonkey `GM_download`、`GM_xmlhttpRequest` 权限，以及 B 站实际返回的 `bilivideo.com` / `bilivideo.cn` / `bilivideo.net` 和签名 `edge.mountaintoys.cn` 媒体域名、收藏夹官方元数据域名 `api.bilibili.com` 和失效元数据恢复来源 `www.biliplus.com`、`www.jijidown.com`。收藏夹修复只在收藏夹页请求这些公开元数据；普通浏览和预览不会因此读取收藏夹内容。由于首页请求和播放地址处理需要尽早执行，脚本使用 `@run-at document-start` 和 `@sandbox raw`。
+脚本 metadata 仅匹配 Bilibili，并声明 Tampermonkey `GM_download`、`GM_xmlhttpRequest` 权限，以及 B 站实际返回的 `bilivideo.com` / `bilivideo.cn` / `bilivideo.net` 和签名 `edge.mountaintoys.cn` 媒体域名、收藏夹官方元数据域名 `api.bilibili.com` 和失效元数据恢复来源 `www.biliplus.com`、`www.jijidown.com`。收藏夹修复只在收藏夹页请求这些公开元数据；普通浏览和预览不会因此读取收藏夹内容。由于播放地址处理需要尽早执行，脚本使用 `@run-at document-start` 和 `@sandbox raw`。
 
 本地开发源码位于 `src/userscript/`，运行 `npm run build` 生成单文件 `bilikit-performance.user.js`；Remux Worker 由构建命令嵌入发布脚本，开发时保留独立源码。
 
@@ -140,9 +129,9 @@ CDN 优选可以进一步设置：
 window.__BILIKIT_VERSION__
 window.__BILIKIT_HOME_FEED_STATS__
 window.__BILIKIT_HOME_FEED_COORDINATOR_STATS__
-window.__BILIKIT_HOME_LAYOUT_STATS__
 window.__BILIKIT_HOME_FEED_PRIORITY_STATS__
 window.__BILIKIT_HOME_AUTO_LOAD_STATS__
+window.__BILIKIT_HOME_LAYOUT_STATS__
 window.__BILIKIT_HOME_AD_STATS__
 window.__BILIKIT_HOME_IMAGE_STATS__
 window.__BILIKIT_CDN_STATS__
@@ -153,13 +142,11 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 
 - `__BILIKIT_HOME_FEED_STATS__`：首页推荐接口优先级、重试次数和最近请求。
 - `__BILIKIT_HOME_FEED_COORDINATOR_STATS__`：Feed 根节点、新增节点和资源调度情况。
-- `__BILIKIT_HOME_LAYOUT_STATS__`：布局修复的行数和归一化卡片数；正常情况下不应持续增长。
-- `__BILIKIT_HOME_FEED_PRIORITY_STATS__`：预加载窗口、观察图片数、首屏高优先级图片和预加载数量。
-- `__BILIKIT_HOME_AUTO_LOAD_STATS__`：自动加载开关、目标行数、探测次数、实际追加行数、已完成批次数、每周期探测上限和停止原因。
-- `__BILIKIT_HOME_AUTO_LOAD_STATS__` 还包括 `batchCount`、`probeMode`、`visibleProbeCount`、`layoutDeferred`、`anchorCorrections`、`maxAnchorDelta` 和 `lastCancelReason`，用于确认自动加载没有产生可见探测跳动。
-- `__BILIKIT_HOME_LAYOUT_STATS__` 还记录自动加载期间延迟的布局修复次数、批次结束后的修复次数和最近一次修复原因。
+- `__BILIKIT_HOME_FEED_PRIORITY_STATS__`：预加载窗口、首屏高优先级图片和预加载数量。
+- `__BILIKIT_HOME_AUTO_LOAD_STATS__`：自动加载开关、目标行数、原生探测次数、追加行数、批次完成数和停止原因。
+- `__BILIKIT_HOME_LAYOUT_STATS__`：原生布局保护器的稳定帧、卡片/行列采样、尺寸变化和属性变化统计；不写入卡片属性，`writes` 始终为 `0`。
 - `__BILIKIT_HOME_AD_STATS__`：首页广告楼层检测和隐藏数量。
-- `__BILIKIT_HOME_IMAGE_STATS__`：首页图片 CDN 节点、改写次数、回退和探测状态。
+- `__BILIKIT_HOME_IMAGE_STATS__`：首页图片节点、改写次数、回退和探测状态。
 - `__BILIKIT_CDN_STATS__`：播放 CDN 地域、节点来源、playurl 改写和 MCDN 直连提升情况。
 - `__BILIKIT_FAVORITES_FIX_STATS__`：收藏夹官方接口来源、外部元数据请求/命中/未命中次数、最近命中来源、卡片/接口条目数、恢复条目数、更新条目数、缓存条目数、标题/封面恢复数、未解决数、悬停面板数和最近错误；不记录 Cookie 或媒体地址。
 
@@ -169,8 +156,7 @@ window.__BILIKIT_FAVORITES_FIX_STATS__
 
 - CDN 优选是基于地域、节点探测和失败反馈的启发式优化，不保证所有网络、运营商和时段都比 B 站原生分配更快；可以在设置中关闭某一地区改写，让 B 站自行分配。
 - 地域未确认时不会强制换节点。节点切换只影响后续请求和未完成资源，不会批量刷新已经显示的图片。
-- 首页自动加载只在未检测到 BiliKit Feed 时运行；它通过原生首页滚动加载机制触发，不直接请求首页接口、不克隆卡片，也不会修改 Feed 脚本。
-- 首页自动加载是有限的启发式触发：页面结构变化、原生接口未响应或浏览器阻止滚动探测时，可能只完成部分加载或跳过本轮。
+- 首页信息流增强只在首页桌面端运行；卡片排布、横向列数、纵向行数、顶部展示位和新内容追加均由 B 站原生逻辑负责，脚本只做小范围资源、广告和稳定性优化。
 - 免登录模式是只读能力：页面可以显示部分公开内容，但发表评论、点赞、投币、收藏、历史同步等需要真实鉴权的操作失败属于预期行为。免登录评论也拿不到服务端只对真实登录返回的 IP 属地字段。
 - 官方试看限制仍由 B 站控制，免登录模式不提供 4K、HDR 或大会员专享清晰度。
 - 主题和评论信息模块只增强现有页面数据，不额外请求评论性别或属地接口；保密用户可能不显示性别。
@@ -203,7 +189,7 @@ node --check bilikit-performance.user.js
 for f in scripts/test-*.mjs; do node "$f"; done
 ```
 
-静态检查通过不等于真实 Edge 回归完成。首页刷新、搜索结果、悬停预览、播放页、MCDN、布局稳定和第三方浏览器扩展联动应在目标浏览器中分别验证。
+静态检查通过不等于真实 Edge 回归完成。首页原生刷新与滚动、搜索结果、悬停预览、播放页、MCDN 和第三方浏览器扩展联动应在目标浏览器中分别验证。
 
 ## 许可证
 

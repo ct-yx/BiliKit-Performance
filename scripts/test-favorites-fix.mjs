@@ -23,7 +23,7 @@ const context = {
   })()
 };
 vm.runInNewContext(
-  `${script.slice(start, end)}\nthis.testApi = { isFavoritesFixPage, parseFavoritesFixUrl, favoritesFixIsRepairTarget, favoritesFixApplyCard, favoritesFixNormalizeId, favoritesFixNormalizePages, favoritesFixNormalizeMedia, favoritesFixMergeMedia, favoritesFixTitle, favoritesFixDisplayTitle, favoritesFixCardDetails, favoritesFixFailureReason, favoritesFixIsLoadingTitle, favoritesFixIsUnusableTitle, favoritesFixIsPlaceholderCover, favoritesFixHasPlaceholderCover, favoritesFixNormalizeExternalCover, favoritesFixNormalizeExternalMetadata, favoritesFixParseExternalPayload, favoritesFixExternalCheckFresh, favoritesFixCachedExternalUseful, favoritesFixCacheRecord, favoritesFixReadCache, favoritesFixWriteCache, favoritesFixMenuText, favoritesFixClearLoadingLabels, favoritesFixCardIdentityKeys, favoritesFixMediaIdentityKeys, favoritesFixFindMediaForCard, favoritesFixCategoryName, favoritesFixMediaForHover };`,
+  `${script.slice(start, end)}\nthis.testApi = { isFavoritesFixPage, parseFavoritesFixUrl, favoritesFixIsRepairTarget, favoritesFixApplyCard, favoritesFixNormalizeId, favoritesFixNormalizePages, favoritesFixNormalizeMedia, favoritesFixMergeMedia, favoritesFixTitle, favoritesFixDisplayTitle, favoritesFixCardDetails, favoritesFixFailureReason, favoritesFixIsLoadingTitle, favoritesFixIsUnusableTitle, favoritesFixIsPlaceholderCover, favoritesFixHasPlaceholderCover, favoritesFixNormalizeExternalCover, favoritesFixNormalizeExternalMetadata, favoritesFixParseExternalPayload, favoritesFixExternalCheckFresh, favoritesFixCachedExternalUseful, favoritesFixCacheRecord, favoritesFixReadCache, favoritesFixWriteCache, favoritesFixMenuText, favoritesFixClearLoadingLabels, favoritesFixCardIdentityKeys, favoritesFixMediaIdentityKeys, favoritesFixFindMediaForCard, favoritesFixCategoryName, favoritesFixMediaForHover, favoritesFixParseApiResponse, favoritesFixParseDirectoryResponse, favoritesFixBuildDownloadCatalog };`,
   context
 );
 
@@ -58,8 +58,24 @@ const {
   favoritesFixMediaForHover,
   favoritesFixIsUnusableTitle,
   favoritesFixNormalizeExternalMetadata,
-  favoritesFixCachedExternalUseful
+  favoritesFixCachedExternalUseful,
+  favoritesFixParseApiResponse,
+  favoritesFixParseDirectoryResponse,
+  favoritesFixBuildDownloadCatalog
 } = context.testApi;
+
+const emptyPublicDirectory = { code: 0, message: "success", data: null };
+const publicDirectory = { code: 0, data: { medias: [{ bvid: "BV1Public0001", title: "公开目录视频" }] } };
+const fallbackDirectory = { code: 0, data: { info: { media_count: 1 }, medias: [{ bvid: "BV1Fallback0001", title: "回退目录视频" }] } };
+if (favoritesFixParseApiResponse(emptyPublicDirectory) !== null) {
+  throw new Error("空公开收藏夹响应不应被当作可用目录");
+}
+if (favoritesFixParseDirectoryResponse(emptyPublicDirectory, fallbackDirectory)?.medias?.[0]?.bvid !== "BV1Fallback0001") {
+  throw new Error("公开目录空响应没有回退到 x/v3 收藏夹目录");
+}
+if (favoritesFixParseDirectoryResponse(publicDirectory, fallbackDirectory)?.medias?.[0]?.bvid !== "BV1Public0001") {
+  throw new Error("可用公开目录不应被错误替换为回退目录");
+}
 
 const makeModernCard = (title) => ({
   querySelector: (selector) => selector === ".bili-video-card__title a" ? { textContent: title } : null,
@@ -402,6 +418,43 @@ if (!menuText.includes("完整视频标题") || !menuText.includes("BV1Test00001
 const normalizedPages = favoritesFixNormalizePages([{ part: "P1", cid: "11", duration: "42" }, { title: "P2", id: "12", duration: 0 }]);
 if (normalizedPages[0].cid !== "11" || normalizedPages[0].duration !== 42 || normalizedPages[1].title !== "P2") {
   throw new Error(`分 P 基础字段标准化错误：${JSON.stringify(normalizedPages)}`);
+}
+
+const favoritesCatalog = favoritesFixBuildDownloadCatalog([
+  {
+    bvid: "BV1FavoriteSingle",
+    aid: "20001",
+    title: "收藏单 P",
+    part: "正片",
+    cid: "80001",
+    pages: [{ page: 1, title: "正片", cid: "80001", duration: 60 }],
+    ownerName: "收藏作者"
+  },
+  {
+    bvid: "BV1FavoriteMulti",
+    aid: "20002",
+    title: "收藏多 P",
+    pages: [
+      { page: 1, title: "第一 P", cid: "81001", duration: 70 },
+      { page: 2, title: "第二 P", cid: "81002", duration: 80 }
+    ]
+  },
+  // 同一视频重复出现时保持第一次收藏顺序，避免工作台生成重复任务。
+  { bvid: "BV1FavoriteSingle", title: "重复条目", cid: "99999" },
+  { aid: "20003", title: "只有 AV 的收藏项", cid: "82001" },
+  { title: "没有视频身份的条目" }
+], "测试公开收藏夹");
+if (favoritesCatalog.map((entry) => entry.collectionIndex).join(",") !== "1,2,3") {
+  throw new Error(`收藏目录没有保持连续顺序：${JSON.stringify(favoritesCatalog)}`);
+}
+if (favoritesCatalog.length !== 3 || favoritesCatalog[0].bvid !== "BV1FavoriteSingle" || favoritesCatalog[1].pages.length !== 2 || favoritesCatalog[2].videoId !== "av20003") {
+  throw new Error(`公开收藏目录过滤、去重或 AV 兜底错误：${JSON.stringify(favoritesCatalog)}`);
+}
+if (favoritesCatalog.some((entry) => entry.downloadScope !== "collection" || entry.favoritesMode !== true || entry.collectionTitle !== "测试公开收藏夹")) {
+  throw new Error(`收藏目录没有标记为收藏夹合集模式：${JSON.stringify(favoritesCatalog)}`);
+}
+if (favoritesCatalog[1].collectionPageCount !== 2 || favoritesCatalog[1].pages[1].cid !== "81002") {
+  throw new Error(`收藏目录多 P 页面没有保留自己的 CID：${JSON.stringify(favoritesCatalog[1])}`);
 }
 
 console.log("收藏夹修复测试通过：URL/身份解析、官方数据标准化、多 P 元数据、缓存合并、占位封面、单 P 标题推断和非收藏夹页面隔离均符合预期。");

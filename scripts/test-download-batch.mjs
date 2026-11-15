@@ -131,8 +131,8 @@ const p3 = catalog.find((entry) => entry.page === 3);
 if (!p1 || !p3 || p1.cidMismatch || p3.cidMismatch || !p1.cid || !p3.cid) {
   throw new Error(`正常 P 的官方目录合并错误：${JSON.stringify(catalog)}`);
 }
-if (!p2?.cidMismatch || p2.cid !== "999" || isDownloadCatalogEntryValid(p2)) {
-  throw new Error(`DOM/官方 CID 冲突未被标记并阻断：${JSON.stringify(p2)}`);
+if (!p2?.cidCorrected || p2.cidMismatch || p2.cid !== "999" || !isDownloadCatalogEntryValid(p2)) {
+  throw new Error(`DOM/官方 CID 冲突未按官方目录修正并放行：${JSON.stringify(p2)}`);
 }
 
 const makeVideo = (id, codec, height = 1080, bandwidth = 8e6) => ({

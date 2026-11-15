@@ -2,6 +2,13 @@
   "repository": "ct-yx/BiliKit-Performance",
   "releases": [
     {
+      "tagName": "v0.7.3",
+      "name": "BiliKit Performance 0.7.3",
+      "publishedAt": "2026-11-15T00:37:10Z",
+      "htmlUrl": "https://github.com/ct-yx/BiliKit-Performance/releases/tag/v0.7.3",
+      "body": "## 更新内容\n\n- 将真视频封面预览直接合并进 Performance：首页和搜索页原生视频卡片悬停后播放静音低清视频，不再依赖独立 BiliKit Feed 脚本。\n- 保留 B 站首页原生卡片排布和滚动加载，补充原生布局稳定、广告处理、封面预加载和动态卡片生命周期协调。\n- 完善免登录评论区和免登录 1080p 播放请求，兼容带 WBI 与普通接口路径。\n- 增加评论区 Emoji / B 站表情拆分 HTTPS 链接识别，并提供新标签页跳转按钮。\n- 完善公开收藏夹目录和批量下载，支持收藏顺序、多 BV、多 P、单项失败重试，并按官方 CID 修正旧目录冲突。\n- 修复首页 BV 号下载的标题、作者和分 P 元数据获取，以及收藏下载 Blob 保存时的页面闪屏问题。\n\n## 验证\n\n- `npm run build` 通过。\n- userscript metadata 校验、userscript 与 Remux Worker 语法检查通过。\n- 完整 `scripts/test-*.mjs` 回归测试通过。\n- `git diff --check` 通过。\n\n## 安装\n\n- [下载 userscript](https://github.com/ct-yx/BiliKit-Performance/releases/download/v0.7.3/bilikit-performance.user.js)\n- [Raw 安装地址](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)\n"
+    },
+    {
       "tagName": "v0.7.2",
       "name": "BiliKit Performance 0.7.2",
       "publishedAt": "2026-11-07T13:15:01Z",

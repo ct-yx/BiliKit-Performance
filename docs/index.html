@@ -195,6 +195,47 @@
     .shot figcaption { margin-top: 10px; font-size: 13px; color: var(--muted); text-align: center; }
     .media-stack { display: grid; gap: 20px; min-width: 0; }
 
+    /* 首页信息流修复前后对比：图片来自真实桌面端截图，顶部浏览器栏已裁去。 */
+    .home-feed-proof {
+      padding: 56px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .home-feed-proof-head {
+      max-width: 680px;
+      margin: 0 auto 28px;
+      text-align: center;
+    }
+    .home-feed-proof-head .num { font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--pink-ink); }
+    .home-feed-proof h3 { font-size: 24px; margin: 10px 0 12px; }
+    .home-feed-proof-head p { margin: 0; color: var(--muted); }
+    .home-feed-proof-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+    }
+    .home-feed-proof figure { margin: 0; min-width: 0; }
+    .home-feed-proof .proof-image {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+      box-shadow: 0 12px 32px -18px rgba(0, 0, 0, .3);
+    }
+    .home-feed-proof figcaption {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+      font-weight: 600;
+    }
+    .home-feed-proof figcaption small { color: var(--muted); font-size: 12px; font-weight: 400; }
+    @media (max-width: 760px), (orientation: portrait) {
+      .home-feed-proof-grid { grid-template-columns: 1fr; gap: 28px; }
+    }
+
     /* 无素材的功能：通栏文字，要点在宽屏下分两列 */
     .feature.no-media { grid-template-columns: 1fr; }
     .feature.no-media .text { order: 0; }
@@ -601,6 +642,24 @@
           <li>停止下滑约 3 秒后自动加载后续内容</li>
           <li>修正网格错位、抖动和频闪</li>
         </ul>
+      </div>
+    </section>
+
+    <section class="home-feed-proof" aria-labelledby="home-feed-proof-title">
+      <div class="home-feed-proof-head">
+        <span class="num">首页实测</span>
+        <h3 id="home-feed-proof-title">首页卡片行列修复前后</h3>
+        <p>脚本保留 B 站原生推荐和滚动加载，只修复信息流中的卡片错位与异常留白。图片已裁去浏览器顶部栏，方便直接对比页面效果。</p>
+      </div>
+      <div class="home-feed-proof-grid">
+        <figure>
+          <img class="proof-image" src="assets/home-feed-after.png" width="3298" height="1602" loading="lazy" alt="首页信息流修复后，顶部展示位和视频卡片按行列对齐排列">
+          <figcaption><span>修复后</span><small>行列对齐，卡片间距稳定</small></figcaption>
+        </figure>
+        <figure>
+          <img class="proof-image" src="assets/home-feed-before.png" width="3298" height="1602" loading="lazy" alt="首页信息流修复前，展示位下方出现大块空白和卡片错位">
+          <figcaption><span>修复前</span><small>出现错位与大块留白</small></figcaption>
+        </figure>
       </div>
     </section>
 

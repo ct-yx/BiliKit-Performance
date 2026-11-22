@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         BiliKit Performance (Edge/Chromium)
 // @namespace    https://github.com/ct-yx/BiliKit-Performance
-// @version      0.7.3
+// @version      0.7.4
 // @author       ct-yx
 // @description  B 站播放交互、统一视频列表下载工作台、收藏夹修复、MP4 音视频封装和桌面端首页信息流增强。
 // @license      MIT

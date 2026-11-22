@@ -26,6 +26,16 @@
   const HOME_FEED_API_RE = /\/x\/web-interface\/wbi\/index\/top\/feed\/rcmd(?:[/?#]|$)/i;
   const HOME_AUX_API_RE = /(?:\/x\/web-interface\/index\/ogv\/rcmd|\/xlive\/web-interface\/v1\/webMain\/getMoreRecList|\/pugv\/app\/web\/floor\/switch|\/twirp\/comic\.v1\.MainStation\/Feed|\/link_setting\/v1\/link_setting\/get|\/x\/im\/web\/msgfeed\/unread|\/session_svr\/v1\/session_svr\/single_unread|\/x\/web-interface\/wbi\/search\/default|\/x\/web-show\/(?:wbi\/)?res\/locs|\/x\/vip\/ads\/materials|\/x\/kv-frontend\/namespace\/data)/i;
   const MEDIA_PLAYURL_API_RE = /\/(?:x\/player\/(?:wbi\/)?playurl|pgc\/player\/(?:web\/)?(?:v2\/)?playurl|pugv\/player\/web\/playurl)(?:[/?#]|$)/i;
+  const urlOf = (input) => {
+    if (typeof input === "string") return input;
+    if (input && typeof input.url === "string") return input.url;
+    if (input && typeof input.href === "string") return input.href;
+    try {
+      return String(input);
+    } catch {
+      return "";
+    }
+  };
   function isBilibiliDocument() {
     return /(?:^|\.)bilibili\.com$/i.test(location.hostname);
   }
@@ -4297,11 +4307,13 @@
   };
   const COMMENT_LINK_MARK = "data-bk-comment-link";
   const COMMENT_LINK_URL_ATTR = "data-bk-comment-link-url";
-  const COMMENT_LINK_URL_RE = /https:\/\/[^\s<>"'`]+/ig;
+  // 评论正文可能紧跟中文说明或 B 站表情；限制为 URL 常用 ASCII 字符，
+  // 避免把“……/app_17j95zybz9n小哲”中的说明文字拼进链接。
+  const COMMENT_LINK_URL_RE = /https:\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+/ig;
   // 评论中常见的规避删链会把 Emoji 插在协议、域名或参数中间。
   // 这里只在识别候选链接时移除 Emoji，不改动用户看到的原评论内容。
   const COMMENT_LINK_EMOJI_RE = /(?:\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Regional_Indicator}|\uFE0F|\u200D|\u20E3)/gu;
-  const COMMENT_LINK_TRAILING_RE = /[\s\u3000\u3001\u3002，。！？；：:、）》）】］】』」〉》>]+$/u;
+  const COMMENT_LINK_TRAILING_RE = /[\s\u3000\u3001\u3002，。！？；：:、）》）】］】』」〉》>,!?;:)]+$/u;
   const COMMENT_LINK_SPACE_RE = /[\s\u3000]/u;
   function stripCommentLinkSeparators(value) {
     return String(value || "")
@@ -4313,19 +4325,50 @@
     text = text.replace(/^[([{（【「『《]+/u, "").replace(COMMENT_LINK_TRAILING_RE, "");
     try {
       const url = new URL(text);
-      if (url.protocol !== "https:" || !url.hostname) return "";
+      // B 站自动识别域名时可能先把“example.”单独变成链接；末尾句点
+      // 不是有效主机名，必须等后面的锚点文字拼接完成后再识别。
+      if (url.protocol !== "https:" || !url.hostname || url.hostname.endsWith(".")) return "";
       return url.href;
     } catch {
       return "";
     }
   }
+  function dedupeCommentLinks(links) {
+    const unique = [];
+    const seen = new Set();
+    for (const link of links || []) {
+      if (!link?.url || seen.has(link.url)) continue;
+      seen.add(link.url);
+      unique.push(link);
+    }
+    // B 站可能先把域名识别成一个独立 <a>，再把同一链接的路径留在
+    // 普通文本中。两个候选 URL 方向相同且后者只是前者的完整路径时，
+    // 只保留更长的候选，避免出现两个按钮。
+    return unique.filter((candidate, index, all) => !all.some((other, otherIndex) => {
+      if (index === otherIndex || other.url === candidate.url) return false;
+      const prefix = candidate.url.endsWith("/") ? candidate.url.slice(0, -1) : candidate.url;
+      if (!other.url.startsWith(prefix)) return false;
+      const remainder = other.url.slice(prefix.length);
+      return /^[/?#]/u.test(remainder);
+    }));
+  }
+  function orderCommentLinkInsertions(links) {
+    return [...(links || [])].sort((left, right) => {
+      const leftNode = left?.endToken?.node;
+      const rightNode = right?.endToken?.node;
+      if (!leftNode || leftNode !== rightNode) return 0;
+      return Number(right?.endToken?.offset || 0) - Number(left?.endToken?.offset || 0);
+    });
+  }
   function restoreCommentLinks(tokens) {
     const chars = [];
     const pushText = (value, token) => {
+      let sourceOffset = 0;
       for (const character of [...String(value || "")]) {
         COMMENT_LINK_EMOJI_RE.lastIndex = 0;
+        sourceOffset += character.length;
         if (/[\u200b-\u200d\ufeff]/u.test(character) || COMMENT_LINK_EMOJI_RE.test(character)) continue;
-        chars.push({ character, token });
+        chars.push({ character, token, endOffset: sourceOffset });
       }
     };
     for (const token of tokens || []) {
@@ -4364,10 +4407,15 @@
       const url = normalizeCommentLink(raw);
       if (!url) continue;
       const end = match.index + raw.length;
-      const endToken = normalized[Math.max(0, end - 1)]?.token || null;
+      const endEntry = normalized[Math.max(0, end - 1)];
+      const endToken = endEntry?.token ? {
+        ...endEntry.token,
+        offset: endEntry.endOffset,
+        element: !!endEntry.token.element
+      } : null;
       links.push({ url, endToken });
     }
-    return links;
+    return dedupeCommentLinks(links);
   }
   function commentLinkSkipElement(element) {
     if (!element || element.nodeType !== 1) return false;
@@ -4415,6 +4463,14 @@
           continue;
         }
         if (child.nodeType !== 1) continue;
+        // B 站会把 URL 的前半段渲染成原生 <a>，后半段仍留在普通文本节点里。
+        // 把锚点的可见文字作为普通 token 收集，才能拼回完整 URL；不使用 href，
+        // 避免把 B 站安全跳转地址误当成评论里的链接。
+        if (child.localName === "a") {
+          const text = child.textContent || "";
+          if (text) tokens.push({ kind: "text", text, node: child, element: true });
+          continue;
+        }
         if (commentLinkSkipElement(child)) continue;
         if (isCommentEmojiNode(child)) {
           tokens.push({ kind: "emoji", text: "", node: child });
@@ -4477,16 +4533,17 @@
     const injectedNodes = new Set();
     let observedRoots = new WeakSet();
     const observers = [];
-    const seenUrls = new WeakMap();
     let topRoot = null;
     let current = null;
     let currentApp = null;
+    let descriptionRoot = null;
     let appObserver = null;
     let scanFrame = null;
     const stats = {
       enabled: true,
       bound: false,
       appFound: false,
+      descriptionFound: false,
       shadowRoots: 0,
       scannedElements: 0,
       candidateElements: 0,
@@ -4509,28 +4566,93 @@
       const links = restoreCommentLinks(tokens);
       if (!links.length) return;
       stats.recognizedLinks += links.length;
-      let urls = seenUrls.get(element);
-      if (!urls) seenUrls.set(element, urls = new Set());
-      for (const link of links) {
+      const scope = logicalScope(element);
+      const existingButtons = collectCommentLinkButtons(scope);
+      const validUrls = new Set(links.map((link) => link.url));
+      const existingByUrl = new Map();
+      for (const existing of existingButtons) {
+        const existingUrl = existing.getAttribute?.(COMMENT_LINK_URL_ATTR) || existing.__bilikitCommentLinkUrl || "";
+        if (!existingUrl || !validUrls.has(existingUrl) || existingByUrl.has(existingUrl)) {
+          existing.remove?.();
+          injectedNodes.delete(existing);
+          continue;
+        }
+        existingByUrl.set(existingUrl, existing);
+      }
+      // 同一个文本节点可能包含多个 URL。先处理靠后的 URL，避免前一个
+      // splitText() 改变节点长度后，让后续链接失去原始插入位置。
+      for (const link of orderCommentLinkInsertions(links)) {
         const endNode = link.endToken?.node;
         if (!endNode || !endNode.parentNode || endNode.parentNode.nodeType !== 1) continue;
         const parent = endNode.parentNode;
-        if (hasLiveCommentLinkButton(parent, link.url)) {
-          urls.add(link.url);
-          continue;
-        }
-        // 评论组件可能在保持同一文本节点的情况下重绘并移除按钮；
-        // 只有确认按钮仍在当前父节点中时，才把 URL 视为已处理。
-        urls.delete(link.url);
+        if (existingByUrl.has(link.url) || hasLiveCommentLinkButton(parent, link.url)) continue;
         const button = createCommentLinkButton(link.url);
         try {
-          parent.insertBefore(button, endNode.nextSibling);
-          urls.add(link.url);
+          if (!link.endToken.element && endNode.nodeType === 3 && typeof endNode.splitText === "function") {
+            const remainder = link.endToken.offset < endNode.length ? endNode.splitText(link.endToken.offset) : null;
+            parent.insertBefore(button, remainder || endNode.nextSibling);
+          } else {
+            parent.insertBefore(button, endNode.nextSibling);
+          }
+          existingByUrl.set(link.url, button);
           injectedNodes.add(button);
           stats.insertedButtons += 1;
         } catch {
         }
       }
+    };
+    const parentElement = (node) => {
+      if (node?.parentNode) return node.parentNode;
+      try { return node?.getRootNode?.()?.host || null; } catch { return null; }
+    };
+    const logicalScope = (element) => {
+      let node = element;
+      let body = null;
+      let description = null;
+      let renderer = null;
+      for (let depth = 0; node && depth < 32; depth += 1) {
+        if (node.nodeType === 1) {
+          const id = node.id || node.getAttribute?.("id") || "";
+          if (id === "body") body ||= node;
+          else if (id === "v_desc" || id === "desc-v2" || node.classList?.contains?.("video-desc")) description ||= node;
+          else if (node.localName === "bili-comment-renderer") renderer ||= node;
+        }
+        node = parentElement(node);
+      }
+      return body || description || renderer || element;
+    };
+    const collectCommentLinkButtons = (root) => {
+      const buttons = [];
+      const visit = (node) => {
+        if (!node) return;
+        if (node.nodeType === 1 && node.hasAttribute?.(COMMENT_LINK_MARK)) buttons.push(node);
+        let children = [];
+        try { children = node.querySelectorAll?.("*") || []; } catch {
+        }
+        for (const child of children) {
+          if (child.hasAttribute?.(COMMENT_LINK_MARK)) buttons.push(child);
+          if (child.shadowRoot) visit(child.shadowRoot);
+        }
+      };
+      visit(root);
+      return buttons;
+    };
+    const scanScope = (element) => {
+      let node = element;
+      let fallback = element;
+      let content = null;
+      let body = null;
+      let renderer = null;
+      for (let depth = 0; node && depth < 32; depth += 1) {
+        if (node.nodeType === 1) {
+          const id = node.id || node.getAttribute?.("id") || "";
+          if (id === "content" || id === "contents") content ||= node;
+          else if (id === "body" || id === "v_desc" || id === "desc-v2") body ||= node;
+          else if (node.localName === "bili-comment-renderer") renderer ||= node;
+        }
+        node = parentElement(node);
+      }
+      return content || body || renderer || fallback;
     };
     const scanRoot = (root) => {
       if (!root) return;
@@ -4541,17 +4663,29 @@
       } catch {
         return;
       }
-      for (const element of elements) scanElement(element);
+      const scopes = new Set();
+      for (const element of elements) {
+        const scope = scanScope(element);
+        // 评论正文若由 bili-rich-text 负责渲染，真正文字在它自己的 Shadow DOM
+        // 中；外层 #body 只会看到半截锚点，跳过外层后由 p#contents 一次处理。
+        if (scope?.id === "body" && scope.querySelector?.("bili-rich-text")) continue;
+        // 自定义评论元素的宿主看不到自己的 Shadow DOM，交给 walk() 递归后的
+        // #body / #contents 处理，避免宿主和内部节点各生成一个按钮。
+        if (scope?.localName === "bili-comment-renderer" && scope.shadowRoot) continue;
+        scopes.add(scope);
+      }
+      for (const scope of scopes) scanElement(scope);
     };
     const schedule = () => {
-      if (scanFrame || !topRoot) return;
+      if (scanFrame || (!topRoot && !descriptionRoot)) return;
       scanFrame = runtime.frame(() => {
         scanFrame = null;
         // 评论组件会先插入宿主元素，再异步挂载 bili-comment-renderer、
         // bili-rich-text 等多层 Shadow DOM。每个增量批次都重新走一遍
         // composed tree，才能发现这次刚挂上的 ShadowRoot；observeRoot
         // 使用 WeakSet 去重，不会重复注册观察器。
-        walk(topRoot);
+        if (topRoot) walk(topRoot);
+        if (descriptionRoot) walk(descriptionRoot);
       });
     };
     const observeRoot = (root) => {
@@ -4599,6 +4733,7 @@
       stats.bound = true;
       stats.lastRoot = comments?.localName || (typeof ShadowRoot !== "undefined" && shadow instanceof ShadowRoot ? "shadow-root" : "comment-root");
       walk(shadow);
+      if (descriptionRoot) walk(descriptionRoot);
     };
     const release = () => {
       for (const observer of observers) observer.disconnectAndForget();
@@ -4608,6 +4743,8 @@
       scanFrame = null;
       topRoot = null;
       current = null;
+      descriptionRoot = null;
+      stats.descriptionFound = false;
     };
     const findCommentHost = (root) => {
       if (!root?.querySelector) return null;
@@ -4657,7 +4794,8 @@
         // Shadow DOM。仅观察 #commentapp 的 childList 捕捉不到这个时序，
         // 因此每轮轻量轮询都要重试绑定。
         tryBind();
-        if (topRoot) schedule();
+        ensureDescription();
+        if (topRoot || descriptionRoot) schedule();
         return;
       }
       appObserver?.disconnectAndForget();
@@ -4668,6 +4806,20 @@
       release();
       const app = document.querySelector("#commentapp") || document.querySelector("bili-comments")?.parentElement;
       if (app) watch(app);
+      ensureDescription();
+    };
+    const ensureDescription = () => {
+      const root = document.querySelector("#v_desc, #desc-v2, .video-desc");
+      if (root?.isConnected) {
+        if (root !== descriptionRoot) {
+          descriptionRoot = root;
+          stats.descriptionFound = true;
+          walk(root);
+        }
+        return;
+      }
+      descriptionRoot = null;
+      stats.descriptionFound = false;
     };
     ensureApp();
     const appPoll = setInterval(ensureApp, 2e3);
@@ -4821,254 +4973,6 @@
     runAt: "idle",
     init: init$2
   };
-  const urlOf = (input) => {
-    if (typeof input === "string") return input;
-    if (input && typeof input.url === "string") return input.url;
-    if (input && typeof input.href === "string") return input.href;
-    try {
-      return String(input);
-    } catch {
-      return "";
-    }
-  };
-  function fixSearchApiUrl(value) {
-    const url = urlOf(value);
-    if (!url.includes("/api.bilibili.comx/web-interface/search")) return "";
-    return url.replace(/\.com(?!\/)/i, ".com/");
-  }
-  function installSearchUrlFix() {
-    if (window.__BILIKIT_SEARCH_URL_FIX__) return;
-    window.__BILIKIT_SEARCH_URL_FIX__ = true;
-    const runtime = getRuntimeCoordinator();
-    const networkHooks = runtime.networkHooks();
-    const removeFetchHook = networkHooks.addFetch("search-url-fix", (next) => function(input, init2) {
-        const fixed = fixSearchApiUrl(input);
-        if (!fixed) return next.apply(this, arguments);
-        let realInput = fixed;
-        if (input instanceof Request) {
-          try {
-            realInput = new Request(fixed, input);
-          } catch {
-          }
-        }
-        return next.call(this, realInput, init2);
-      });
-    const removeXhrHook = networkHooks.addXHR("search-url-fix", (BaseXHR) => class X extends BaseXHR {
-        open(method, url, ...rest) {
-          const fixed = fixSearchApiUrl(url);
-          return super.open(method, fixed || url, ...rest);
-        }
-      });
-    const dispose = () => {
-      removeFetchHook();
-      removeXhrHook();
-      if (window.__BILIKIT_SEARCH_URL_FIX__) delete window.__BILIKIT_SEARCH_URL_FIX__;
-    };
-    runtime.addCleanup(dispose);
-    return dispose;
-  }
-  function requestToInit(req) {
-    const headers = {};
-    try {
-      req.headers.forEach((v, k) => {
-        headers[k] = v;
-      });
-    } catch {
-    }
-    return { method: req.method, headers, credentials: req.credentials, referrer: req.referrer, signal: req.signal };
-  }
-  function installNetHook(rules) {
-    if (window.__BILIKIT_NET_HOOK__) return window.__BILIKIT_NET_HOOK_DISPOSE__ || null;
-    window.__BILIKIT_NET_HOOK__ = true;
-    const runtime = getRuntimeCoordinator();
-    const networkHooks = runtime.networkHooks();
-    // 同一个接口通常会被 fetch/XHR 反复访问；缓存规则判断，避免每次都遍历全部规则。
-    const ruleCache = new Map();
-    const findRule = (url) => {
-      const key = String(url || "").split("#", 1)[0];
-      if (ruleCache.has(key)) return ruleCache.get(key);
-      const rule = rules.find((r) => r.match(key));
-      if (ruleCache.size >= 128) ruleCache.clear();
-      ruleCache.set(key, rule || null);
-      return rule || null;
-    };
-    const removeFetchHook = networkHooks.addFetch("no-login-net", (origFetch) => function(input, init2) {
-        const url = urlOf(input);
-        const rule = findRule(url);
-        if (!rule) return origFetch.apply(this, arguments);
-        const dispatch = (rw) => {
-          let realInput = input;
-          let realInit = init2;
-          if (rw && (rw.url || rw.credentials)) {
-            if (input instanceof Request && !rw.url) {
-              realInput = new Request(input, rw.credentials ? { credentials: rw.credentials } : {});
-              realInit = init2;
-            } else {
-              const base = input instanceof Request ? requestToInit(input) : init2 || {};
-              realInput = rw.url || url;
-              realInit = { ...base, ...rw.credentials ? { credentials: rw.credentials } : {} };
-            }
-          }
-          const response = origFetch.call(this, realInput, realInit);
-          if (!rule.rewriteResponse && !rule.onResponse) return response;
-          return response.then(async (resp) => {
-            if (rule.onResponse) {
-              try {
-                void resp.clone().json().then((payload) => rule.onResponse(payload, url)).catch(() => {
-                });
-              } catch {
-              }
-            }
-            if (!rule.rewriteResponse) return resp;
-            try {
-              const text = await resp.clone().text();
-              const out = rule.rewriteResponse(JSON.parse(text), url);
-              const headers = new Headers(resp.headers);
-              headers.delete("content-length");
-              headers.delete("content-encoding");
-              return new Response(JSON.stringify(out), { status: resp.status, statusText: resp.statusText, headers });
-            } catch {
-              return resp;
-            }
-          });
-        };
-        const immediate = rule.rewriteRequest?.(url);
-        if (immediate?.url || immediate?.credentials || !rule.awaitRewrite) return dispatch(immediate);
-        // fetch 也必须等待首轮 WBI 密钥；只在 XHR.send 中等待会让播放器的
-        // 首个 playurl 请求先按匿名低清路径发出，后续再有密钥也来不及切换。
-        return Promise.resolve(rule.awaitRewrite(url)).then((rw) => dispatch(rw), () => dispatch(immediate));
-      });
-    const removeXhrHook = networkHooks.addXHR("no-login-net", (OX) => class X extends OX {
-        constructor() {
-          super(...arguments);
-          this.__nlUrl = "";
-          this.__nlOpenArgs = ["GET", ""];
-          this.__nlHeaders = [];
-          this.__nlGeneration = 0;
-          this.__nlObservedResponseGeneration = -1;
-          this.__nlAborted = false;
-        }
-        open(method, url, ...rest) {
-          var _a, _b, _c;
-          this.__nlGeneration++;
-          this.__nlObservedResponseGeneration = -1;
-          this.__nlAborted = false;
-          this.__nlUrl = String(url);
-          this.__nlOpenArgs = [method, url, ...rest];
-          this.__nlHeaders = [];
-          this.__nlRule = findRule(this.__nlUrl);
-          this.__nlRw = (_b = (_a = this.__nlRule) == null ? void 0 : _a.rewriteRequest) == null ? void 0 : _b.call(_a, this.__nlUrl);
-          return super.open(method, ((_c = this.__nlRw) == null ? void 0 : _c.url) || url, ...rest);
-        }
-        abort() {
-          this.__nlAborted = true;
-          this.__nlGeneration++;
-          return super.abort();
-        }
-        setRequestHeader(name, value) {
-          try {
-            this.__nlHeaders.push([name, value]);
-          } catch {
-          }
-          return super.setRequestHeader(name, value);
-        }
-        __nlApplyCreds(c) {
-          if (c === "omit") this.withCredentials = false;
-          else if (c) this.withCredentials = true;
-        }
-        send(body) {
-          var _a, _b, _c;
-          if (((_a = this.__nlRule) == null ? void 0 : _a.awaitRewrite) && !((_b = this.__nlRw) == null ? void 0 : _b.url)) {
-            const generation = this.__nlGeneration;
-            const openArgs = [...this.__nlOpenArgs];
-            const headers = [...this.__nlHeaders];
-            const stillCurrent = () => !this.__nlAborted && this.__nlGeneration === generation;
-            const sendCurrent = (rw) => {
-              if (!stillCurrent()) return;
-              try {
-                if (rw == null ? void 0 : rw.url) {
-                  const [method, _oldUrl, ...rest] = openArgs;
-                  super.open(method, rw.url, ...rest);
-                  for (const h of headers) {
-                    try {
-                      super.setRequestHeader(h[0], h[1]);
-                    } catch {
-                    }
-                  }
-                }
-                this.__nlApplyCreds(rw == null ? void 0 : rw.credentials);
-              } catch {
-              }
-              if (!stillCurrent()) return;
-              try {
-                super.send(body);
-              } catch {
-              }
-            };
-            this.__nlRule.awaitRewrite(this.__nlUrl).then((rw) => {
-              sendCurrent(rw);
-            }, () => sendCurrent());
-            return;
-          }
-          this.__nlApplyCreds((_c = this.__nlRw) == null ? void 0 : _c.credentials);
-          return super.send(body);
-        }
-        get responseText() {
-          var _a;
-          const rt = this.responseType;
-          if (rt !== "" && rt !== "text") return super.responseText;
-          const raw = super.responseText;
-          this.__nlObserveResponse(raw);
-          if (this.readyState === 4 && ((_a = this.__nlRule) == null ? void 0 : _a.rewriteResponse) && typeof raw === "string") {
-            try {
-              return JSON.stringify(this.__nlRule.rewriteResponse(JSON.parse(raw), this.__nlUrl));
-            } catch {
-              return raw;
-            }
-          }
-          return raw;
-        }
-        get response() {
-          var _a;
-          const raw = super.response;
-          this.__nlObserveResponse(raw);
-          if (this.readyState === 4 && ((_a = this.__nlRule) == null ? void 0 : _a.rewriteResponse)) {
-            if (typeof raw === "string") {
-              try {
-                return JSON.stringify(this.__nlRule.rewriteResponse(JSON.parse(raw), this.__nlUrl));
-              } catch {
-                return raw;
-              }
-            }
-            if (raw && typeof raw === "object") {
-              try {
-                return this.__nlRule.rewriteResponse(raw, this.__nlUrl);
-              } catch {
-                return raw;
-              }
-            }
-          }
-          return raw;
-        }
-        __nlObserveResponse(raw) {
-          if (this.readyState !== 4 || !this.__nlRule?.onResponse || this.__nlObservedResponseGeneration === this.__nlGeneration) return;
-          this.__nlObservedResponseGeneration = this.__nlGeneration;
-          try {
-            const payload = typeof raw === "string" ? JSON.parse(raw) : raw;
-            if (payload && typeof payload === "object") this.__nlRule.onResponse(payload, this.__nlUrl);
-          } catch {
-          }
-        }
-      });
-    const dispose = () => {
-      removeFetchHook();
-      removeXhrHook();
-      if (window.__BILIKIT_NET_HOOK_DISPOSE__ === dispose) delete window.__BILIKIT_NET_HOOK_DISPOSE__;
-      if (window.__BILIKIT_NET_HOOK__) delete window.__BILIKIT_NET_HOOK__;
-    };
-    window.__BILIKIT_NET_HOOK_DISPOSE__ = dispose;
-    return dispose;
-  }
   const MIXIN_TAB = [
     46,
     47,
@@ -5198,605 +5102,221 @@
     if (!keys) return null;
     return signParams(params, keys.img, keys.sub, Math.floor(Date.now() / 1e3));
   }
-  function playurlParams(url) {
-    const [base, qs = ""] = url.split("?");
-    const params = Object.fromEntries(new URLSearchParams(qs));
-    delete params.w_rid;
-    delete params.wts;
-    params.qn = "80";
-    params.try_look = "1";
-    params.platform = "pc";
-    params.fnval = "4048";
-    params.fourk = "1";
-    return { base, params };
-  }
-  const AUTH_CACHE_KEY = "bilikit:no-login-auth";
-  const VALID_TTL_MS = 5 * 60 * 1e3;
-  function cookieValue(cookie, name) {
-    for (const part of cookie.split(";")) {
-      const item = part.trim();
-      const eq = item.indexOf("=");
-      if (eq < 0 || item.slice(0, eq) !== name) continue;
-      const value = item.slice(eq + 1);
-      return value || null;
-    }
-    return null;
-  }
-  function loginCookieFingerprint(cookie) {
-    const value = cookieValue(cookie, "DedeUserID__ckMd5");
-    return value ? md5(value) : null;
-  }
-  function readCachedStatus(storage, fingerprint, now) {
+  const GUEST_LOGIN_GUARD_PROMPTED_KEY = "bilikit:guest-login-guard-prompted";
+  const GUEST_LOGIN_GUARD_HIDDEN_CLASS = "bk-guest-login-guard-hidden";
+  const GUEST_LOGIN_GUARD_PROMPT_CLASS = "bk-guest-login-guard-prompt";
+  const GUEST_LOGIN_GUARD_STYLE_ID = "bilikit-guest-login-guard-style";
+  const GUEST_LOGIN_GUARD_SELECTOR = [
+    ".bili-mini-mask",
+    ".login-panel-popover",
+    ".login-tip",
+    ".bpx-player-toast-item",
+    "[class*='login-popover']",
+    "[class*='login-mask']"
+  ].join(",");
+  const GUEST_LOGIN_GUARD_TEXT_RE = /扫码登录|密码登录|短信登录|登录后你可以|登录哔哩哔哩|登录后观看|登录\s*免费享高清视频|高清视频免费看|试看\s*\d*\s*秒|请先登录|立即登录/u;
+  const GUEST_LOGIN_GUARD_CSS = `
+.${GUEST_LOGIN_GUARD_HIDDEN_CLASS}{display:none!important;visibility:hidden!important;pointer-events:none!important}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS}{position:fixed;left:50%;bottom:24px;z-index:2147483000;width:min(440px,calc(100vw - 32px));box-sizing:border-box;padding:16px 18px;border:1px solid color-mix(in srgb,var(--line_regular,#e3e5e7) 72%,transparent);border-radius:16px;background:color-mix(in srgb,var(--bg1,#fff) 94%,transparent);color:var(--text1,#18191c);box-shadow:0 12px 36px rgba(0,0,0,.22);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;transform:translate(-50%,12px);opacity:0;transition:opacity .2s ease,transform .2s ease}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS}.on{transform:translate(-50%,0);opacity:1}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS} strong{display:block;margin-bottom:5px;font-size:15px}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS} p{margin:0;color:var(--text2,#61666d)}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS} .actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS} button{min-height:34px;padding:0 13px;border-radius:9px;border:1px solid var(--line_regular,#e3e5e7);background:var(--bg1,#fff);color:var(--text1,#18191c);font:inherit;cursor:pointer}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS} button.primary{border-color:var(--brand_blue,#00aeec);background:var(--brand_blue,#00aeec);color:#fff}
+.${GUEST_LOGIN_GUARD_PROMPT_CLASS} button:hover{filter:brightness(.97)}
+@media(prefers-reduced-motion:reduce){.${GUEST_LOGIN_GUARD_PROMPT_CLASS}{transition:none}}
+`;
+  function guestLoginGuardHasSession() {
     try {
-      const record = JSON.parse(storage.getItem(AUTH_CACHE_KEY) || "null");
-      if (!record || record.fingerprint !== fingerprint) return "unknown";
-      if (record.status === "invalid") return "invalid";
-      if (record.status === "valid" && now - record.checkedAt <= VALID_TTL_MS) return "valid";
+      return /(?:^|;\s*)(?:SESSDATA|DedeUserID|DedeUserID__ckMd5)=[^;]*/.test(document.cookie);
     } catch {
-    }
-    return "unknown";
-  }
-  function initialAuthAction(cookie, storage, now = Date.now()) {
-    const fingerprint = loginCookieFingerprint(cookie);
-    if (!fingerprint) return "activate-guest";
-    const cached = readCachedStatus(storage, fingerprint, now);
-    if (cached === "invalid") return "activate-guest";
-    if (cached === "valid") return "skip";
-    return "verify";
-  }
-  function loginStatusFromNav(json) {
-    var _a, _b;
-    if ((json == null ? void 0 : json.code) === 0 && ((_a = json == null ? void 0 : json.data) == null ? void 0 : _a.isLogin) === true) return "valid";
-    if (((json == null ? void 0 : json.code) === 0 || (json == null ? void 0 : json.code) === -101) && ((_b = json == null ? void 0 : json.data) == null ? void 0 : _b.isLogin) === false) return "invalid";
-    return "unknown";
-  }
-  async function verifyLogin(pureFetch, timeoutMs = 2500) {
-    const controller = new AbortController();
-    let timer;
-    const request = pureFetch("https://api.bilibili.com/x/web-interface/nav", {
-      credentials: "include",
-      cache: "no-store",
-      signal: controller.signal
-    }).then(async (response) => {
-      if (!response.ok) return "unknown";
-      return loginStatusFromNav(await response.json());
-    }).catch(() => "unknown");
-    const timeout = new Promise((resolve2) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        resolve2("unknown");
-      }, timeoutMs);
-    });
-    try {
-      return await Promise.race([request, timeout]);
-    } finally {
-      if (timer) clearTimeout(timer);
+      return false;
     }
   }
-  function rememberVerifiedLogin(storage, fingerprint, status, now = Date.now()) {
-    if (status === "unknown") return "skip";
+  function guestLoginGuardIsPrompt(element) {
+    if (!(element instanceof Element)) return false;
+    let matches = false;
     try {
-      const record = { fingerprint, status, checkedAt: now };
-      storage.setItem(AUTH_CACHE_KEY, JSON.stringify(record));
-      return status === "invalid" ? "reload" : "skip";
+      matches = element.matches(GUEST_LOGIN_GUARD_SELECTOR);
     } catch {
-      return "skip";
+      matches = false;
     }
+    if (!matches) return false;
+    return GUEST_LOGIN_GUARD_TEXT_RE.test(String(element.textContent || "").replace(/\s+/g, " "));
   }
-  const AUTH_HOSTS = ["message.bilibili.com", "account.bilibili.com", "member.bilibili.com", "pay.bilibili.com", "big.bilibili.com"];
-  const AUTH_PATHS = ["/history", "/watchlater", "/favlist", "/medialist", "/account", "/pincenter"];
-  function needsRealLogin() {
-    if (AUTH_HOSTS.includes(location.hostname)) return true;
-    return AUTH_PATHS.some((p) => location.pathname.includes(p));
-  }
-  function clearFakeUid() {
-    try {
-      if (/DedeUserID=/.test(document.cookie)) document.cookie = "DedeUserID=; path=/; domain=.bilibili.com; max-age=0";
-    } catch {
-    }
-  }
-  function getSessionStorage() {
-    try {
-      return window.sessionStorage;
-    } catch {
-      return null;
-    }
-  }
-  function init$1(cfg) {
-    var _a;
-    if (window.__BILIKIT_NO_LOGIN__) return;
-    if (window.top !== window.self && !location.hash.includes("bk-drawer")) return;
-    if (location.hostname === "passport.bilibili.com") return;
-    const commentsEnabled = cfg?.get?.("comments") !== false;
-    const video1080pEnabled = cfg?.get?.("video1080p") !== false;
-    if (!commentsEnabled && !video1080pEnabled) {
-      clearFakeUid();
-      return;
-    }
-    const requestStats = {
-      enabled: true,
-      commentsEnabled,
-      video1080pEnabled,
-      commentRequests: 0,
-      playurlRequests: 0,
-      playurlRewrites: 0,
-      wbiWaits: 0,
-      wbiReady: 0,
-      wbiFallbacks: 0,
-      lastPlayurlUrl: "",
-      lastFailure: ""
+  function initGuestLoginGuard(cfg) {
+    if (!isBilibiliDocument() || location.hostname === "passport.bilibili.com") return;
+    if (window.__BILIKIT_GUEST_LOGIN_GUARD__) return;
+    window.__BILIKIT_GUEST_LOGIN_GUARD__ = true;
+    const runtime = getRuntimeCoordinator();
+    const hiddenNodes = new Set();
+    const previousAria = new Map();
+    const recentPlaying = new Map();
+    let prompt = null;
+    let style = null;
+    let frame = null;
+    let enabled = cfg?.get?.("enabled") === true;
+    const ensureStyle = () => {
+      if (style?.isConnected) return;
+      style = document.createElement("style");
+      style.id = GUEST_LOGIN_GUARD_STYLE_ID;
+      style.textContent = GUEST_LOGIN_GUARD_CSS;
+      (document.head || document.documentElement)?.appendChild(style);
     };
-    try {
-      Object.defineProperty(window, "__BILIKIT_NO_LOGIN_STATS__", { configurable: true, get: () => ({ ...requestStats }) });
-    } catch {
-    }
-    const homePage = isHomePage();
-    const searchPage = isSearchPage();
-    const bangumiPage = /^\/(?:bangumi|cheese)\/play\//i.test(location.pathname);
-    if (homePage) {
-      // 首页信息流不需要免登录响应改写；保留 B 站原生 fetch/XHR，避免全量 hook
-      // 包住推荐接口和悬停预览请求。视频页、动态页仍按原逻辑提供免登录能力。
-      if (!loginCookieFingerprint(document.cookie)) clearFakeUid();
-      return;
-    }
-    const fingerprint = loginCookieFingerprint(document.cookie);
-    const authStorage = fingerprint ? getSessionStorage() : null;
-    const authAction = fingerprint ? authStorage ? initialAuthAction(document.cookie, authStorage) : "skip" : "activate-guest";
-    if (authAction === "skip") return;
-    if (authAction === "verify") {
-      if (window.top !== window.self || window.__BILIKIT_NO_LOGIN_AUTH_CHECK__) return;
-      window.__BILIKIT_NO_LOGIN_AUTH_CHECK__ = true;
-      const pureFetch2 = (_a = window.fetch) == null ? void 0 : _a.bind(window);
-      if (!fingerprint || !authStorage || !pureFetch2) return;
-      void verifyLogin(pureFetch2).then((status) => {
-        if (loginCookieFingerprint(document.cookie) !== fingerprint) return;
-        if (rememberVerifiedLogin(authStorage, fingerprint, status) !== "reload") return;
+    const restore = () => {
+      for (const node of hiddenNodes) {
         try {
-          location.reload();
+          node.classList.remove(GUEST_LOGIN_GUARD_HIDDEN_CLASS);
+          const aria = previousAria.get(node);
+          if (aria == null) node.removeAttribute("aria-hidden");
+          else node.setAttribute("aria-hidden", aria);
         } catch {
         }
+      }
+      hiddenNodes.clear();
+      previousAria.clear();
+    };
+    const hide = (node) => {
+      if (hiddenNodes.has(node)) return false;
+      hiddenNodes.add(node);
+      previousAria.set(node, node.getAttribute("aria-hidden"));
+      node.classList.add(GUEST_LOGIN_GUARD_HIDDEN_CLASS);
+      node.setAttribute("aria-hidden", "true");
+      return true;
+    };
+    const resumeRecentlyPlaying = () => {
+      const now = Date.now();
+      for (const [video, at] of recentPlaying) {
+        if (!video.isConnected || now - at > 5000) {
+          recentPlaying.delete(video);
+          continue;
+        }
+        if (!video.paused || video.ended) continue;
+        try { void video.play().catch(() => {}); } catch {}
+      }
+    };
+    const apply = () => {
+      const active = enabled && !guestLoginGuardHasSession();
+      if (!active) {
+        restore();
+        return;
+      }
+      ensureStyle();
+      let newlyHidden = false;
+      try {
+        const nodes = document.querySelectorAll(GUEST_LOGIN_GUARD_SELECTOR);
+        for (const node of nodes) {
+          if (!guestLoginGuardIsPrompt(node)) continue;
+          newlyHidden = hide(node) || newlyHidden;
+        }
+      } catch {
+      }
+      if (newlyHidden) resumeRecentlyPlaying();
+    };
+    const dismissPrompt = () => {
+      if (!prompt) return;
+      prompt.classList.remove("on");
+      const node = prompt;
+      prompt = null;
+      runtime.timeout(() => node.remove(), 220);
+    };
+    const markPrompted = () => set(GUEST_LOGIN_GUARD_PROMPTED_KEY, true);
+    const showPrompt = () => {
+      if (prompt || !document.body || !isHomePage() || enabled || guestLoginGuardHasSession() || get(GUEST_LOGIN_GUARD_PROMPTED_KEY, false)) return;
+      ensureStyle();
+      const box = document.createElement("div");
+      box.className = GUEST_LOGIN_GUARD_PROMPT_CLASS;
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-label", "未登录提示设置");
+      const title = document.createElement("strong");
+      title.textContent = "要拦截未登录提示吗？";
+      const description = document.createElement("p");
+      description.textContent = "开启后会隐藏登录弹窗和登录提示卡，播放中也不会被这类提示打断。";
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const later = document.createElement("button");
+      later.type = "button";
+      later.textContent = "暂不开启";
+      const enable = document.createElement("button");
+      enable.type = "button";
+      enable.className = "primary";
+      enable.textContent = "开启拦截";
+      later.addEventListener("click", () => {
+        markPrompted();
+        dismissPrompt();
       });
-      return;
-    }
-    if (needsRealLogin()) {
-      clearFakeUid();
-      return;
-    }
-    if (searchPage) {
-      // 搜索结果只保留 B 站自身的接口地址修复；不伪造登录态、不改响应，
-      // 也不安装免登录完整规则，避免干扰搜索结果和原生悬停预览。
-      if (!fingerprint) clearFakeUid();
-      return installSearchUrlFix();
-    }
-    window.__BILIKIT_NO_LOGIN__ = true;
-    showGuestNotice({ comments: commentsEnabled, video1080p: video1080pEnabled });
-    installLogoutIntercept();
-    if (!/DedeUserID=/.test(document.cookie)) {
-      try {
-        document.cookie = `DedeUserID=${Math.floor(Math.random() * 2 ** 50)}; path=/; domain=.bilibili.com`;
-      } catch {
-      }
-    }
-    try {
-      const st = document.createElement("style");
-      st.textContent = ".van-message.van-message-error{display:none!important}";
-      (document.head || document.documentElement).appendChild(st);
-    } catch {
-    }
-    if (video1080pEnabled && !bangumiPage) {
-      try {
-        // 普通视频免登录模式隐藏 __playinfo__，但保留内存快照供下载工作台使用。
-        // PGC 播放器会自己管理这两个全局状态；番剧页不重定义它们，避免破坏
-        // 播放列表初始化和季度切换。
-        let hiddenPlayinfo = null;
-        try {
-          hiddenPlayinfo = window.__playinfo__;
-        } catch {
-        }
-        if (hiddenPlayinfo) cacheDownloadPlayinfo(hiddenPlayinfo, "no-login-global");
-        Object.defineProperty(window, "__playinfo__", {
-          configurable: true,
-          get: () => null,
-          set: (value) => {
-            hiddenPlayinfo = value;
-            cacheDownloadPlayinfo(value, "no-login-global");
-          }
-        });
-      } catch {
-      }
-      try {
-        const sc = document.createElement("script");
-        sc.textContent = "const playurlSSRData = {}";
-        (document.head || document.documentElement).appendChild(sc);
-        sc.remove();
-      } catch {
-      }
-    }
-    const pureFetch = window.fetch.bind(window);
-    if (video1080pEnabled) warmKeys(pureFetch);
-    const MID = Math.floor(Math.random() * 1e15);
-    const MOCK_USER = {
-      isLogin: true,
-      is_login: true,
-      mid: MID,
-      uname: "bilibili",
-      face: "https://i0.hdslb.com/bfs/face/member/noface.jpg",
-      email_verified: 1,
-      mobile_verified: 1,
-      money: 0,
-      moral: 70,
-      level_info: { current_level: 6, current_min: 28800, current_exp: 29050, next_exp: "--" },
-      official: { role: 0, title: "", desc: "", type: -1 },
-      officialVerify: { type: -1, desc: "" },
-      vipStatus: 0,
-      vipType: 0
+      enable.addEventListener("click", () => {
+        markPrompted();
+        setField("guest-login-guard", "enabled", true);
+        dismissPrompt();
+        apply();
+      });
+      actions.append(later, enable);
+      box.append(title, description, actions);
+      document.body.appendChild(box);
+      prompt = box;
+      requestAnimationFrame(() => box.classList.add("on"));
     };
-    const MOCK_MYINFO = {
-      profile: {
-        mid: MID,
-        name: "bilibili",
-        sex: "保密",
-        face: "https://i0.hdslb.com/bfs/face/member/noface.jpg",
-        sign: "",
-        rank: 1e4,
-        level: 6,
-        jointime: 0,
-        moral: 70,
-        silence: 0,
-        email_status: 0,
-        tel_status: 1,
-        identification: 0,
-        vip: {
-          type: 0,
-          status: 0,
-          due_date: 0,
-          vip_pay_type: 0,
-          theme_type: 0,
-          label: { path: "", text: "", label_theme: "", text_color: "", bg_style: 0, bg_color: "", border_color: "", use_img_label: true, img_label_uri_hans: "", img_label_uri_hant: "", img_label_uri_hans_static: "", img_label_uri_hant_static: "", label_id: 0, label_goto: null },
-          avatar_subscript: 0,
-          nickname_color: "",
-          role: 0,
-          avatar_subscript_url: "",
-          tv_vip_status: 0,
-          tv_vip_pay_type: 0,
-          tv_due_date: 0,
-          avatar_icon: { icon_resource: {} },
-          ott_info: { vip_type: 0, pay_type: 0, pay_channel_id: "", status: 0, overdue_time: 0 },
-          super_vip: { is_super_vip: false }
-        },
-        pendant: { pid: 0, name: "", image: "", expire: 0, image_enhance: "", image_enhance_frame: "", n_pid: 0 },
-        nameplate: { nid: 0, name: "", image: "", image_small: "", level: "", condition: "" },
-        official: { role: 0, title: "", desc: "", type: -1 },
-        birthday: 315504e3,
-        is_tourist: 0,
-        is_fake_account: 0,
-        pin_prompting: 0,
-        is_deleted: 0,
-        in_reg_audit: 0,
-        is_rip_user: false,
-        profession: { id: 0, name: "", show_name: "", is_show: 0, category_one: "", realname: "", title: "", department: "", certificate_no: "", certificate_show: false },
-        face_nft: 0,
-        face_nft_new: 0,
-        is_senior_member: 0,
-        honours: { mid: MID, colour: { dark: "#CE8620", normal: "#F0900B" }, tags: null, is_latest_100honour: 0 },
-        digital_id: "",
-        digital_type: -2,
-        attestation: { type: 0, common_info: { title: "", prefix: "", prefix_title: "" }, splice_info: { title: "" }, icon: "", desc: "" },
-        expert_info: { title: "", state: 0, type: 0, desc: "" },
-        name_render: null,
-        country_code: "86",
-        handle: ""
-      },
-      level_exp: { current_level: 6, current_min: 28800, current_exp: 29050, next_exp: "--" },
-      coins: 0,
-      following: 0,
-      follower: 0
+    const schedule = () => {
+      if (frame) return;
+      frame = runtime.frame(() => {
+        frame = null;
+        apply();
+        showPrompt();
+      });
     };
-    const rules = [
-      // space/v2/myinfo：伪造成功响应压掉空间页「会话失效 → 自刷」路径（真登录成功不动）
-      {
-        match: (u) => u.includes("/x/space/v2/myinfo"),
-        rewriteResponse: (j) => {
-          var _a2;
-          try {
-            if ((j == null ? void 0 : j.code) === 0 && ((_a2 = j == null ? void 0 : j.data) == null ? void 0 : _a2.profile)) return j;
-          } catch {
-          }
-          return { code: 0, message: "0", ttl: 1, data: MOCK_MYINFO };
-        }
-      },
-      // nav：合并成「已登录」，保留 wbi_img 等原字段（→ 登录态 UI + 动态可见）
-      {
-        match: (u) => u.includes("/x/web-interface/nav"),
-        rewriteResponse: (j) => {
-          var _a2;
-          try {
-            if ((_a2 = j == null ? void 0 : j.data) == null ? void 0 : _a2.isLogin) return j;
-            j.code = 0;
-            j.message = "0";
-            j.data = Object.assign({}, j.data, MOCK_USER);
-          } catch {
-          }
-          return j;
-        }
-      },
-      // reply：匿名请求（假 cookie 会被拒，去掉反而正常返公开评论）→ 视频/动态下方评论
-      {
-        match: (u) => commentsEnabled && /\/x\/v2\/reply\/(?:wbi\/)?(?:main|reply)(?:[/?#]|$)/i.test(u),
-        rewriteRequest: () => {
-          requestStats.commentRequests += 1;
-          return { credentials: "omit" };
-        }
-      },
-      // player/wbi/v2：改 login_mid / 等级 / 字幕字段 → 播放器 UI 认账（清晰度、字幕可选）
-      {
-        match: (u) => video1080pEnabled && !searchPage && u.includes("/x/player/wbi/v2"),
-        rewriteResponse: (j) => {
-          try {
-            const d = j == null ? void 0 : j.data;
-            if (d) {
-              d.login_mid = MID;
-              d.need_login_subtitle = false;
-              if (d.level_info) d.level_info.current_level = 6;
-            }
-          } catch {
-          }
-          return j;
-        }
-      },
-      // relation：与 UP 的关注关系——假 cookie 下真接口返 -101 → 关注按钮/粉丝数报错、
-      // 视频页红 toast 的源头之一。mock 成「无关注关系」（照抄 beefreely useRelation）。
-      // 注意 match 写全 'web-interface/relation?'：别误吞 archive/relation（下一条单独管）。
-      {
-        match: (u) => u.includes("/x/web-interface/relation?"),
-        rewriteResponse: (j) => {
-          try {
-            if ((j == null ? void 0 : j.code) === 0 && (j == null ? void 0 : j.data)) return j;
-          } catch {
-          }
-          return { code: 0, message: "0", ttl: 1, data: {
-            relation: { mid: 0, attribute: 0, mtime: 0, tag: null, special: 0 },
-            be_relation: { mid: 0, attribute: 0, mtime: 0, tag: null, special: 0 }
-          } };
-        }
-      },
-      // archive/relation：与本视频的互动状态（点赞/投币/收藏）——同样返 -101 触发未登录提示。
-      // mock 成「均未互动」（照抄 beefreely useArchiveRelation）。
-      {
-        match: (u) => u.includes("/x/web-interface/archive/relation"),
-        rewriteResponse: (j) => {
-          try {
-            if ((j == null ? void 0 : j.code) === 0 && (j == null ? void 0 : j.data)) return j;
-          } catch {
-          }
-          return { code: 0, message: "0", ttl: 1, data: {
-            attention: false,
-            favorite: false,
-            season_fav: false,
-            like: false,
-            dislike: false,
-            coin: 0
-          } };
-        }
-      },
-      // 搜索页热搜接口拼接损坏（B 站自身 bug，只在未登录时出现）：api.bilibili.comx/... 少了个 /
-      // → 404、热搜/搜索结果拿不到。补上斜杠（照抄 beefreely useSearch）。
-      {
-        match: (u) => u.includes("/api.bilibili.comx/web-interface/search"),
-        rewriteRequest: (u) => ({ url: u.replace(/\.com(?!\/)/, ".com/") })
-      },
-      // 番剧/PGC（ogv/player/playview）：把 user_status.is_login 掰成 true → 播放器不再弹
-      // 「登录后观看」、清晰度不锁最低。PGC 无需重签 playurl，is_login 即全部机制（beefreely 同）。
-      {
-        match: (u) => video1080pEnabled && !searchPage && u.includes("/ogv/player/playview"),
-        rewriteResponse: (j) => {
-          var _a2;
-          try {
-            if ((_a2 = j == null ? void 0 : j.data) == null ? void 0 : _a2.user_status) j.data.user_status.is_login = true;
-          } catch {
-          }
-          return j;
-        }
-      },
-      // playurl：塞 qn=80(1080p) + try_look=1(试看)、去掉旧签名重签 wbi → 1080p 取流。
-      // iPad/移动 Safari 触发 B 站触屏判定 → 播放器发 platform=html5(MP4)，服务端对 html5 的免登录
-      // 试看只给到 480p，qn=80 也被打回。故强行掰回桌面 DASH 路径：platform=pc + fnval=4048(全 DASH)
-      // + fourk=1，让服务端按桌面策略放行 1080p 试看（桌面本就这套，零风险；iPad 靠 MSE 放 DASH）。
-      {
-        // 搜索页的 playurl 属于 B 站原生悬停预览：保持原请求参数，避免
-        // 免登录模块把低清预览放大成 1080p/DASH。
-        match: (u) => video1080pEnabled && !searchPage && NO_LOGIN_PLAYURL_RE.test(u),
-        // 捕获本页实际返回的轨道供下载工作台使用；不重写或延迟播放响应。
-        onResponse: (payload, url) => {
-          requestStats.lastPlayurlUrl = String(url || "");
-          cacheDownloadPlayinfo(payload, "no-login-hook", url);
-        },
-        // 快路径：key 已缓存 → 同步签名，零延迟
-        rewriteRequest: (u) => {
-          requestStats.playurlRequests += 1;
-          requestStats.lastPlayurlUrl = String(u || "");
-          try {
-            const { base, params } = playurlParams(u);
-            const signed = signQuery(params);
-            if (!signed) {
-              requestStats.wbiFallbacks += 1;
-              return;
-            }
-            requestStats.playurlRewrites += 1;
-            return { url: `${base}?${signed}` };
-          } catch {
-            requestStats.lastFailure = "playurl-rewrite-error";
-            return;
-          }
-        },
-        // 首次播放时 WBI 密钥可能尚未缓存；等待密钥可避免首个播放请求落到低清路径，
-        // 超时则保留原请求。
-        awaitRewrite: async (u) => {
-          requestStats.wbiWaits += 1;
-          try {
-            if (!await ensureKeys(pureFetch, 1500)) {
-              requestStats.wbiFallbacks += 1;
-              requestStats.lastFailure = "wbi-timeout";
-              return;
-            }
-            requestStats.wbiReady += 1;
-            const { base, params } = playurlParams(u);
-            const signed = signQuery(params);
-            if (signed) requestStats.playurlRewrites += 1;
-            return signed ? { url: `${base}?${signed}` } : void 0;
-          } catch {
-            requestStats.wbiFallbacks += 1;
-            requestStats.lastFailure = "wbi-rewrite-error";
-            return;
-          }
-        }
-      }
-    ];
-    const disposeNetHook = installNetHook(rules);
-    return () => {
-      disposeNetHook?.();
-      if (window.__BILIKIT_NO_LOGIN_STATS__) delete window.__BILIKIT_NO_LOGIN_STATS__;
-    };
-  }
-  const NOTICE_KEY = "no-login.notified";
-  const NOTICE_CSS = `
-.bk-nl-toast{ position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(10px);
-  z-index:2147483000; display:flex; align-items:center; gap:10px; max-width:min(94vw,540px);
-  padding:11px 12px 11px 15px; border-radius:12px; background:rgba(22,23,28,.94); color:#e3e5e7;
-  border:1px solid rgba(255,255,255,.1); box-shadow:0 8px 32px rgba(0,0,0,.42);
-  -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
-  font-family:-apple-system,"PingFang SC",sans-serif; font-size:13px; line-height:1.5;
-  opacity:0; transition:opacity .28s ease, transform .28s ease; }
-.bk-nl-toast.on{ opacity:1; transform:translateX(-50%) translateY(0); }
-.bk-nl-toast .bk-nl-txt{ flex:1; min-width:0; }
-.bk-nl-toast .bk-nl-txt b{ color:#fff; font-weight:600; }
-.bk-nl-toast .bk-nl-sub{ color:rgba(255,255,255,.5); font-size:11px; margin-top:2px; }
-.bk-nl-toast .bk-nl-btn{ flex:0 0 auto; height:30px; padding:0 13px; border-radius:8px; cursor:pointer; white-space:nowrap;
-  font-size:12.5px; font-weight:500; font-family:inherit; transition:background .15s ease, border-color .15s ease; }
-.bk-nl-toast .bk-nl-off{ border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.06); color:#e3e5e7; }
-.bk-nl-toast .bk-nl-off:hover{ background:rgba(255,255,255,.13); }
-.bk-nl-toast .bk-nl-login{ border:1px solid transparent; background:#fb7299; color:#fff; }
-.bk-nl-toast .bk-nl-login:hover{ background:#fb8bab; }
-.bk-nl-toast .bk-nl-x{ flex:0 0 auto; width:22px; height:22px; padding:0; border:none; background:none;
-  color:rgba(255,255,255,.4); font-size:17px; line-height:1; cursor:pointer; transition:color .15s ease; }
-.bk-nl-toast .bk-nl-x:hover{ color:rgba(255,255,255,.75); }`;
-  function exitToLogin() {
-    clearFakeUid();
-    const login = "https://passport.bilibili.com/login?gourl=" + encodeURIComponent(location.href);
-    try {
-      (window.top || window).location.href = login;
-    } catch {
-      location.href = login;
-    }
-  }
-  function disableNoLogin() {
-    try {
-      setModuleEnabled("no-login", false);
-    } catch {
-    }
-    clearFakeUid();
-    try {
-      location.reload();
-    } catch {
-    }
-  }
-  function showGuestNotice(features = {}) {
-    if (window.top !== window.self) return;
-    if (get(NOTICE_KEY, false)) return;
-    const labels = [
-      features.comments !== false ? "评论" : "",
-      features.video1080p !== false ? "1080p" : ""
-    ].filter(Boolean).join(" / ");
-    const run = () => {
-      var _a, _b, _c;
-      if (!document.body) return;
-      set(NOTICE_KEY, true);
-      try {
-        let dismiss = function() {
-          if (fadeTimer) {
-            clearTimeout(fadeTimer);
-            fadeTimer = null;
-          }
-          box.classList.remove("on");
-          setTimeout(() => {
-            try {
-              box.remove();
-            } catch {
-            }
-          }, 320);
-        };
-        const style = document.createElement("style");
-        style.textContent = NOTICE_CSS;
-        (document.head || document.documentElement).appendChild(style);
-        const box = document.createElement("div");
-        box.className = "bk-nl-toast";
-        box.innerHTML = `<div class="bk-nl-txt"><b>已开启免登录</b>——未登录也能看${labels || "公开内容"}。<div class="bk-nl-sub">想用自己的账号点「我要登录」；不需要此功能点「关闭功能」。</div></div><button class="bk-nl-btn bk-nl-off" type="button">关闭功能</button><button class="bk-nl-btn bk-nl-login" type="button">我要登录</button><button class="bk-nl-x" type="button" aria-label="忽略">×</button>`;
-        document.body.appendChild(box);
-        requestAnimationFrame(() => box.classList.add("on"));
-        let fadeTimer = setTimeout(dismiss, 8e3);
-        const stopFade = () => {
-          if (fadeTimer) {
-            clearTimeout(fadeTimer);
-            fadeTimer = null;
-          }
-        };
-        (_a = box.querySelector(".bk-nl-x")) == null ? void 0 : _a.addEventListener("click", dismiss);
-        (_b = box.querySelector(".bk-nl-off")) == null ? void 0 : _b.addEventListener("click", () => {
-          stopFade();
-          disableNoLogin();
-        });
-        (_c = box.querySelector(".bk-nl-login")) == null ? void 0 : _c.addEventListener("click", () => {
-          stopFade();
-          exitToLogin();
-        });
-      } catch {
-      }
-    };
-    if (document.body) run();
-    else document.addEventListener("DOMContentLoaded", run, { once: true });
-  }
-  function isLogoutClick(start) {
-    var _a;
-    let el2 = start;
-    for (let i = 0; el2 && i < 6; i++, el2 = el2.parentElement) {
-      const cls = typeof el2.className === "string" ? el2.className : "";
-      if (/(^|[\s_-])logout/i.test(cls)) return true;
-      const href = (_a = el2.getAttribute) == null ? void 0 : _a.call(el2, "href");
-      if (href && /login\/exit/i.test(href)) return true;
-      const txt = (el2.textContent || "").trim();
-      if (txt === "退出登录") return true;
-    }
-    return false;
-  }
-  function installLogoutIntercept() {
-    if (window.__BILIKIT_NL_LOGOUT__) return;
-    window.__BILIKIT_NL_LOGOUT__ = true;
-    document.addEventListener("click", (e) => {
-      try {
-        if (!isLogoutClick(e.target)) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        exitToLogin();
-      } catch {
-      }
+    const observer = runtime.createObserver(schedule);
+    if (observer && document.documentElement) observer.observe(document.documentElement, { childList: true, subtree: true });
+    runtime.listen(document, "playing", (event) => {
+      const video = event.target;
+      if (video instanceof HTMLVideoElement) recentPlaying.set(video, Date.now());
     }, true);
+    runtime.listen(window, "popstate", schedule);
+    runtime.listen(window, "hashchange", schedule);
+    const historyHooks = runtime.networkHooks();
+    const removePush = historyHooks.addHistory("guest-login-guard", "pushState", (next) => function(...args) {
+      const result = next.apply(this, args);
+      schedule();
+      return result;
+    });
+    const removeReplace = historyHooks.addHistory("guest-login-guard", "replaceState", (next) => function(...args) {
+      const result = next.apply(this, args);
+      schedule();
+      return result;
+    });
+    runtime.addCleanup(removePush);
+    runtime.addCleanup(removeReplace);
+    const authTimer = setInterval(schedule, 1500);
+    runtime.addCleanup(() => clearInterval(authTimer));
+    runtime.listen(window, SETTINGS_EVENT, () => {
+      enabled = cfg?.get?.("enabled") === true;
+      schedule();
+    });
+    schedule();
+    return () => {
+      if (frame) frame.cancel();
+      frame = null;
+      removePush?.();
+      removeReplace?.();
+      restore();
+      dismissPrompt();
+      style?.remove();
+      recentPlaying.clear();
+      if (window.__BILIKIT_GUEST_LOGIN_GUARD__) delete window.__BILIKIT_GUEST_LOGIN_GUARD__;
+    };
   }
-  const noLogin = {
-    id: "no-login",
-    name: "免登录",
-    description: "未登录也能看评论 / 他人动态 / 1080p（装它即可替代 beefreely，避免脚本冲突）",
-    note: "开启后未登录也能：看视频/动态下方<b>评论</b>、看他人<b>动态</b>、看 <b>1080p</b> 视频。装了它就能卸载 beefreely 等免登录脚本，避免多个脚本抢改请求导致的时好时坏。<br><b>取舍（务必知悉）</b>：① 纯<b>只读</b>——页面「以为」你已登录（显示假账号），但发评论/点赞/投币/收藏/历史同步等需真鉴权的操作都会失败；② <b>看不到评论 IP 属地</b>——评论走匿名请求，B 站服务端只对真登录返回属地字段，免登录下拿不到（「评论信息」里的性别仍可显示）；③ 1080p 上限为官方<b>试看</b>，4K/HDR/大会员专享清晰度仍拿不到；④ 仅<b>未登录</b>时生效，检测到已登录会自动让路、不干扰真账号。<br>若浏览器残留了服务端已失效的登录状态，会自动确认并<b>刷新一次</b>后恢复免登录，不会清除你的 Cookie。<br><b>默认开启</b>：只在未登录时激活（已登录零影响），首次激活会在底部弹一次可关闭的提示。这样无痕/未登录浏览打开即 1080p，无需每次手动开。<br><b>想真正登录</b>：直接点顶栏用户菜单里的「退出登录」即可——会跳到登录页，登录后自动回到当前页面；免登录本身<b>不会被关掉</b>，下次未登录时照常自动生效。",
-    category: "增强",
-    // 默认开：仅未登录时激活（真登录由 nav 确认后 return、零影响），首次激活弹一次性可关提示告知。
-    // 目的：无痕模式存不住任何页面侧开关（localStorage/cookie 关窗即清、@grant none 无法用 GM 存储跨会话），
-    // 唯一能让「无痕未登录时默认免登录」成立的就是把默认值设对；用一次性披露弹框换取透明、避免静默吓到人。
+  const guestLoginGuard = {
+    id: "guest-login-guard",
+    name: "未登录提示拦截",
+    description: "拦截未登录时反复出现的登录弹窗、浮层和提示卡，不改写评论或播放请求",
+    category: "界面",
     defaultEnabled: true,
     runAt: "start",
     settings: [
-      { key: "comments", type: "toggle", label: "免登录评论区", default: true, hint: "未登录时使用匿名公开评论接口；关闭后不改写评论请求" },
-      { key: "video1080p", type: "toggle", label: "免登录 1080p", default: true, hint: "未登录时请求官方允许的试看清晰度；关闭后不改写播放清晰度请求" }
+      { key: "enabled", type: "toggle", label: "拦截未登录提示", default: false, hint: "作用于首页、视频页和其他 B 站页面；关闭后恢复 B 站原生登录提示" }
     ],
-    init: init$1
+    init: initGuestLoginGuard
   };
   const DRAWER_HISTORY_KEY = "__bilikitDrawer";
   const DRAWER_ORIGIN_KEY = "__bilikitDrawerOrigin";
@@ -8047,9 +7567,7 @@
     init
   };
   function initDownloadWorkspace() {
-    // downloadWorkspace 在 registry 中排在 no-login 前面，因此这里安装捕获器
-    // 仍早于免登录模块读取首份 SSR/playurl 响应；捕获器和播放器入口都由
-    // 当前模块的生命周期统一管理。
+    // 下载捕获器在播放入口之前安装，优先读取页面已有的 SSR/playurl 数据。
     const disposeCapture = installDownloadCapture();
     const disposeEntry = installPlayerDownloadEntry();
     return () => {

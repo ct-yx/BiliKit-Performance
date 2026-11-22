@@ -31,6 +31,9 @@ class FakeElement {
   getAttribute(name) {
     return this.attributes[name] ?? null;
   }
+  get textContent() {
+    return this.childNodes.map((child) => child.nodeType === 3 ? child.nodeValue : child.textContent || "").join("");
+  }
   hasAttribute(name) {
     return Object.prototype.hasOwnProperty.call(this.attributes, name);
   }
@@ -47,8 +50,8 @@ const context = {
   COMMENT_LINK_MARK: "data-bk-comment-link",
   COMMENT_LINK_URL_ATTR: "data-bk-comment-link-url"
 };
-vm.runInNewContext(`${source.slice(start, end)}\nglobalThis.testApi = { normalizeCommentLink, restoreCommentLinks, isCommentEmojiNode, collectCommentLinkTokens, hasLiveCommentLinkButton };`, context);
-const { normalizeCommentLink, restoreCommentLinks, isCommentEmojiNode, collectCommentLinkTokens, hasLiveCommentLinkButton } = context.testApi;
+vm.runInNewContext(`${source.slice(start, end)}\nglobalThis.testApi = { normalizeCommentLink, restoreCommentLinks, dedupeCommentLinks, orderCommentLinkInsertions, isCommentEmojiNode, collectCommentLinkTokens, hasLiveCommentLinkButton };`, context);
+const { normalizeCommentLink, restoreCommentLinks, dedupeCommentLinks, orderCommentLinkInsertions, isCommentEmojiNode, collectCommentLinkTokens, hasLiveCommentLinkButton } = context.testApi;
 
 const first = { kind: "text", text: "请打开 https://example.com/" };
 const emoji = { kind: "emoji", text: "", node: {} };
@@ -103,6 +106,40 @@ const fixtureLinks = restoreCommentLinks(fixtureTokens);
 if (fixtureLinks.length !== 1 || fixtureLinks[0].url !== "https://pan.baidu.com/s/1GvrgpeDgxTg5z8sQUz_7dg?pwd=4f1n") {
   throw new Error(`真实评论 DOM 形态还原错误：${JSON.stringify(fixtureLinks)}`);
 }
+const anchorSplitFixture = new FakeElement("div", {}, [
+  new FakeElement("span", {}, [new FakeText("入口：")]),
+  new FakeElement("a", { href: "https://4mhm3sdsmh4v7.doubao.link/app/app_17j95zybz9n" }, [
+    new FakeText("https://4mhm3sdsmh4v7.doubao.link")
+  ]),
+  new FakeText("/app/app_17j95zybz9n小哲，你看一下")
+]);
+const anchorSplitLinks = restoreCommentLinks(collectCommentLinkTokens(anchorSplitFixture));
+if (anchorSplitLinks.length !== 1 || anchorSplitLinks[0].url !== "https://4mhm3sdsmh4v7.doubao.link/app/app_17j95zybz9n") {
+  throw new Error(`B 站锚点拆分链接还原错误：${anchorSplitLinks.map((link) => link.url).join(",")}`);
+}
+const splitCandidates = dedupeCommentLinks([
+  { url: "https://4mhm3sdsmh4v7.doubao.link", endToken: null },
+  { url: "https://4mhm3sdsmh4v7.doubao.link/app/app_17j95zybz9n", endToken: null }
+]);
+if (splitCandidates.length !== 1 || splitCandidates[0].url !== "https://4mhm3sdsmh4v7.doubao.link/app/app_17j95zybz9n") {
+  throw new Error(`域名短候选未被完整路径候选去重：${JSON.stringify(splitCandidates)}`);
+}
+const duplicateCandidates = dedupeCommentLinks([
+  { url: "https://www.minecraft.net/zh-hans/eula", endToken: null },
+  { url: "https://www.minecraft.net/zh-hans/eula", endToken: null }
+]);
+if (duplicateCandidates.length !== 1) throw new Error("同一评论中的重复 URL 未去重");
+const twoLinksNode = {};
+const twoLinks = restoreCommentLinks([
+  { kind: "text", text: "https://one.example/a 和 https://two.example/b", node: twoLinksNode }
+]);
+if (twoLinks.length !== 2 || twoLinks[0].url !== "https://one.example/a" || twoLinks[1].url !== "https://two.example/b") {
+  throw new Error(`同一文本节点中的两个链接未分别识别：${JSON.stringify(twoLinks)}`);
+}
+const insertionOrder = orderCommentLinkInsertions(twoLinks);
+if (insertionOrder[0].url !== "https://two.example/b" || insertionOrder[1].url !== "https://one.example/a") {
+  throw new Error(`同一文本节点的链接没有按末尾位置倒序插入：${JSON.stringify(insertionOrder)}`);
+}
 const liveButtonParent = new FakeElement("span");
 const liveButton = new FakeElement("button", {
   "data-bk-comment-link": "1",
@@ -117,8 +154,15 @@ if (hasLiveCommentLinkButton(liveButtonParent, fixtureLinks[0].url)) {
   throw new Error("被评论组件移除的识别按钮仍被误判为存活");
 }
 if (normalizeCommentLink("http://example.com/file")) throw new Error("HTTP 链接不应被识别");
+if (normalizeCommentLink("https://example.com.")) throw new Error("未闭合的域名片段不应生成按钮");
 if (normalizeCommentLink("https://example.com/file，") !== "https://example.com/file") {
   throw new Error("链接末尾中文标点未清理");
+}
+const parenthesizedLink = restoreCommentLinks([
+  { kind: "text", text: "根据《协议》(https://www.minecraft.net/zh-hans/eula)即可查看", node: {} }
+]);
+if (parenthesizedLink.length !== 1 || parenthesizedLink[0].url !== "https://www.minecraft.net/zh-hans/eula") {
+  throw new Error(`括号不应拼入链接：${parenthesizedLink.map((link) => link.url).join(",")}`);
 }
 if (restoreCommentLinks([{ kind: "text", text: "普通评论，没有链接" }]).length) {
   throw new Error("普通评论不应生成链接");

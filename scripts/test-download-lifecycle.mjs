@@ -11,9 +11,9 @@ const [entryPrefix, entrySuffix, download] = await Promise.all([
 const registerStart = entrySuffix.indexOf("register(");
 const registerEnd = entrySuffix.indexOf(");", registerStart);
 const registration = entrySuffix.slice(registerStart, registerEnd);
-if (registration.indexOf("downloadWorkspace") < 0 || registration.indexOf("noLogin") < 0 ||
-  registration.indexOf("downloadWorkspace") > registration.indexOf("noLogin")) {
-  throw new Error("下载工作台必须在免登录模块前初始化，才能捕获首份播放响应");
+if (registration.indexOf("downloadWorkspace") < 0 || registration.indexOf("guestLoginGuard") < 0 ||
+  registration.includes("noLogin")) {
+  throw new Error("下载工作台和未登录提示拦截模块必须注册，旧免登录模块不应继续注册");
 }
 if (/if\s*\(isModuleEnabled\(downloadWorkspace\)\)\s+installDownloadCapture\(\)/.test(entrySuffix)) {
   throw new Error("下载捕获器仍在模块生命周期外预装");

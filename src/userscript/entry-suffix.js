@@ -875,10 +875,8 @@
     commentLocation,
     commentObfuscatedLinks,
     wakeLock,
-    // 下载捕获器必须先于免登录网络钩子初始化：它需要读取首份 SSR/playurl
-    // 响应，但仍由下载工作台自己的 init/dispose 生命周期统一管理。
     downloadWorkspace,
-    noLogin,
+    guestLoginGuard,
     favoritesFix,
     updateRedirect,
     // 注册在 cdn-pick 之后：其 fetch/XHR 与 __playinfo__ hook 需叠在最外层（改请求；cdn-pick 改响应 host）

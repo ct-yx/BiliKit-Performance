@@ -2102,9 +2102,6 @@
     });
   }
   function downloadCapturePriority(sourceLabel) {
-    // CDN hook 在响应被改写前保存的快照优先；no-login hook 看到的可能已经是
-    // CDN 包装后的响应，只能作为 CDN hook 未启用时的回退。
-    if (String(sourceLabel).includes("no-login-hook")) return 1;
     if (String(sourceLabel).includes("cdn-hook")) return 3;
     if (String(sourceLabel).includes("JSON.parse")) return 2;
     return 2;
@@ -2728,8 +2725,7 @@
     let enabled = true;
     let destroyed = false;
     let untrackRuntimeCleanup = () => {};
-    // 必须在 runAll()/no-login 初始化前读 SSR 播放数据：免登录模块会有意
-    // 将 window.__playinfo__ 隐藏为 null，之后再安装网络钩子就已经错过首份轨道。
+    // 在播放器脚本覆盖前读取页面已有的 SSR 播放数据，作为下载工作台的首份轨道快照。
     try {
       const initialPlayinfo = window.__playinfo__;
       if (initialPlayinfo && typeof initialPlayinfo === "object") {

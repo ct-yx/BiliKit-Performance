@@ -8,7 +8,7 @@ BiliKit Performance 是运行在 Edge/Chromium 浏览器中的 Bilibili userscri
 
 - 仓库：<https://github.com/ct-yx/BiliKit-Performance>
 - 默认分支：`main`
-- 当前版本：`0.7.3`
+- 当前版本：`0.7.4`
 - 发布入口：`bilikit-performance.user.js`
 - 原始安装地址：<https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js>
 - 本文档创建前的基线提交：`32036b15c0ef9efbde6fdb9c65ea869b640fdfe4`
@@ -68,7 +68,7 @@ Worker 通过 `DOWNLOAD_WORKER_SOURCE` 标记内嵌到 userscript。标记数量
 - 只处理可确认的 Bilibili 播放响应和合法直连地址，不伪造签名、不改清晰度、不绕过访问控制。
 - 播放卡片支持抽屉、新标签页和当前页打开；播放页支持回程、网页全屏协作和正式播放时的 Screen Wake Lock。
 - 播放页生命周期必须随 SPA URL 和播放器状态清理旧监听器、旧轨道快照和旧任务引用。
-- 免登录模块提供独立的评论区和 1080p 开关；评论请求兼容 WBI/无 WBI 路径，播放首请求会等待 WBI 密钥后再重签名。
+- 已移除旧免登录评论区和 1080p 请求改写；当前保留“未登录提示拦截”模块，由用户开启后隐藏 B 站页面反复出现的登录弹窗、浮层和提示卡，不改写评论或播放请求。
 - “评论链接识别”模块遍历评论 Shadow DOM，先移除识别用的 Unicode Emoji，再识别 B 站表情图片拆开的 HTTPS 链接，按钮默认通过已有 GM 打开 API 新建标签页。
 
 ### 收藏夹修复

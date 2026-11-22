@@ -2,6 +2,13 @@
   "repository": "ct-yx/BiliKit-Performance",
   "releases": [
     {
+      "tagName": "v0.7.4",
+      "name": "BiliKit Performance 0.7.4",
+      "publishedAt": "2026-11-22T07:23:59Z",
+      "htmlUrl": "https://github.com/ct-yx/BiliKit-Performance/releases/tag/v0.7.4",
+      "body": "## 更新内容\n\n- 移除旧的“免登录评论区”和“免登录 1080p”请求改写，恢复 Bilibili 原生评论与播放请求链路。\n- 新增“未登录提示拦截”：可在设置中启用，覆盖首页、视频页及其他 Bilibili 页面上的登录弹窗、登录浮层、登录提示卡和试看提示；播放被提示打断时尝试恢复最近播放的视频。\n- 首页首次进入时提供“未登录提示拦截”开启提示，之后可在设置中修改。\n- 修复评论区 Emoji / B 站表情拆分链接识别：清理括号和句末标点，处理 B 站原生链接节点与普通文本拼接，去除重复候选，并让多个链接的按钮分别放在对应链接后。\n- 支持视频简介区域的 HTTPS 链接识别。\n- 保留收藏夹下载、下载工作台、首页原生信息流与视频预览等现有能力。\n\n## 验证\n\n- `npm run build` 通过。\n- userscript metadata 校验、userscript 与 Remux Worker 语法检查通过。\n- 全部 `scripts/test-*.mjs` 回归测试通过。\n- `git diff --check` 通过。\n- 已通过 Userscript Bridge 将 Edge 中的安装脚本更新至 `0.7.4`，并完成回读哈希校验。\n\n## 安装\n\n- [下载 userscript](https://github.com/ct-yx/BiliKit-Performance/releases/download/v0.7.4/bilikit-performance.user.js)\n- [Raw 安装地址](https://raw.githubusercontent.com/ct-yx/BiliKit-Performance/main/bilikit-performance.user.js)\n"
+    },
+    {
       "tagName": "v0.7.3",
       "name": "BiliKit Performance 0.7.3",
       "publishedAt": "2026-11-15T00:37:10Z",

@@ -1,6 +1,6 @@
 # BiliKit Performance 功能介绍
 
-当前版本：**0.7.4**
+当前版本：**0.7.5**
 
 BiliKit Performance 是面向 Edge / Chromium 的 Bilibili userscript，主要提供播放交互、播放器下载工作台、收藏夹失效视频修复和桌面端首页信息流增强。详细实现以当前发布脚本为准：[bilikit-performance.user.js](../bilikit-performance.user.js)。
 

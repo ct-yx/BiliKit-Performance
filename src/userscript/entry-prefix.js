@@ -5106,6 +5106,13 @@
   const GUEST_LOGIN_GUARD_HIDDEN_CLASS = "bk-guest-login-guard-hidden";
   const GUEST_LOGIN_GUARD_PROMPT_CLASS = "bk-guest-login-guard-prompt";
   const GUEST_LOGIN_GUARD_STYLE_ID = "bilikit-guest-login-guard-style";
+  const GUEST_LOGIN_GUARD_MANUAL_LOGIN_WINDOW = 30000;
+  const GUEST_LOGIN_GUARD_RESUME_WINDOW = 60000;
+  const GUEST_LOGIN_GUARD_LOGIN_TRIGGER_SELECTOR = [
+    ".header-avatar-unlogin-wrap",
+    ".header-avatar-unlogin-entry",
+    "[class*='avatar-unlogin']"
+  ].join(",");
   const GUEST_LOGIN_GUARD_SELECTOR = [
     ".bili-mini-mask",
     ".login-panel-popover",
@@ -5152,10 +5159,14 @@
     const runtime = getRuntimeCoordinator();
     const hiddenNodes = new Set();
     const previousAria = new Map();
-    const recentPlaying = new Map();
+    const playbackSnapshots = new Map();
+    let latestPlaybackSnapshot = null;
     let prompt = null;
     let style = null;
     let frame = null;
+    let manualLoginUntil = 0;
+    let manualLoginActive = false;
+    let resumePending = false;
     let enabled = cfg?.get?.("enabled") === true;
     const ensureStyle = () => {
       if (style?.isConnected) return;
@@ -5185,34 +5196,102 @@
       node.setAttribute("aria-hidden", "true");
       return true;
     };
+    const rememberPlayback = (video) => {
+      if (!(video instanceof HTMLVideoElement) || video.paused || video.ended) return;
+      const container = video.closest(".bpx-player-container, #bilibili-player");
+      if (!container) return;
+      const snapshot = {
+        video,
+        updatedAt: Date.now(),
+        currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+        wasPlaying: true,
+        screen: container?.getAttribute?.("data-screen") || "normal",
+        fullscreen: !!(document.fullscreenElement || document.webkitFullscreenElement)
+      };
+      latestPlaybackSnapshot = snapshot;
+      playbackSnapshots.set(video, snapshot);
+    };
+    const restorePlayerMode = (video, snapshot) => {
+      const container = video?.closest?.(".bpx-player-container") || document.querySelector(".bpx-player-container");
+      if (!container) return;
+      const currentScreen = container.getAttribute("data-screen") || "normal";
+      if (snapshot.screen && snapshot.screen !== "normal" && currentScreen !== snapshot.screen) {
+        const selector = snapshot.screen === "web" ? ".bpx-player-ctrl-web" : snapshot.screen === "wide" ? ".bpx-player-ctrl-wide" : "";
+        const button = selector ? container.querySelector(selector) : null;
+        try { button?.click(); } catch {}
+      }
+      if (snapshot.fullscreen && !(document.fullscreenElement || document.webkitFullscreenElement)) {
+        try { container.querySelector(".bpx-player-ctrl-full")?.click(); } catch {}
+      }
+    };
+    const currentLoginPrompt = () => {
+      try {
+        return [...document.querySelectorAll(GUEST_LOGIN_GUARD_SELECTOR)].find(guestLoginGuardIsPrompt) || null;
+      } catch {
+        return null;
+      }
+    };
     const resumeRecentlyPlaying = () => {
       const now = Date.now();
-      for (const [video, at] of recentPlaying) {
-        if (!video.isConnected || now - at > 5000) {
-          recentPlaying.delete(video);
-          continue;
+      if (!resumePending) return;
+      resumePending = false;
+      const snapshot = latestPlaybackSnapshot;
+      if (!snapshot || now - snapshot.updatedAt > GUEST_LOGIN_GUARD_RESUME_WINDOW || !snapshot.wasPlaying) return;
+      const restore = () => {
+        const video = snapshot.video;
+        const currentVideo = video?.isConnected ? video : document.querySelector(".bpx-player-container video, #bilibili-player video, video");
+        if (!currentVideo || currentVideo.ended) return;
+        if (snapshot.currentTime > 0 && Math.abs(currentVideo.currentTime - snapshot.currentTime) > 2) {
+          try { currentVideo.currentTime = snapshot.currentTime; } catch {}
         }
-        if (!video.paused || video.ended) continue;
-        try { void video.play().catch(() => {}); } catch {}
-      }
+        restorePlayerMode(currentVideo, snapshot);
+        try {
+          const playResult = currentVideo.play();
+          playResult?.catch?.(() => {
+            try { currentVideo.closest(".bpx-player-container")?.querySelector(".bpx-player-ctrl-play")?.click(); } catch {}
+          });
+        } catch {
+          try { currentVideo.closest(".bpx-player-container")?.querySelector(".bpx-player-ctrl-play")?.click(); } catch {}
+        }
+      };
+      // B 站会在登录弹窗关闭/隐藏时重新挂载播放器，分多次恢复模式和播放。
+      runtime.timeout(restore, 100);
+      runtime.timeout(restore, 500);
+      runtime.timeout(restore, 1500);
+      runtime.timeout(restore, 3000);
+    };
+    const schedulePlaybackResume = () => {
+      if (!enabled || guestLoginGuardHasSession() || manualLoginActive || !hiddenNodes.size) return;
+      const snapshot = latestPlaybackSnapshot;
+      if (!snapshot || Date.now() - snapshot.updatedAt > GUEST_LOGIN_GUARD_RESUME_WINDOW) return;
+      if (resumePending) return;
+      resumePending = true;
+      resumeRecentlyPlaying();
     };
     const apply = () => {
       const active = enabled && !guestLoginGuardHasSession();
-      if (!active) {
+      // 用户主动点击头像登录时，让 B 站自己的登录入口完整接管一段时间。
+      // 这一步只放行用户触发的登录流程，不会关闭整体拦截功能。
+      const manualPrompt = manualLoginActive && !!currentLoginPrompt();
+      if (!active || Date.now() < manualLoginUntil || manualPrompt) {
         restore();
         return;
       }
       ensureStyle();
       let newlyHidden = false;
+      let promptFound = false;
       try {
         const nodes = document.querySelectorAll(GUEST_LOGIN_GUARD_SELECTOR);
         for (const node of nodes) {
           if (!guestLoginGuardIsPrompt(node)) continue;
+          promptFound = true;
           newlyHidden = hide(node) || newlyHidden;
         }
       } catch {
       }
-      if (newlyHidden) resumeRecentlyPlaying();
+      if (promptFound) {
+        if (newlyHidden) schedulePlaybackResume();
+      }
     };
     const dismissPrompt = () => {
       if (!prompt) return;
@@ -5266,11 +5345,25 @@
         showPrompt();
       });
     };
+    runtime.listen(document, "click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      let trigger = null;
+      try { trigger = target.closest(GUEST_LOGIN_GUARD_LOGIN_TRIGGER_SELECTOR); } catch {}
+      if (!trigger) return;
+      manualLoginActive = true;
+      manualLoginUntil = Date.now() + GUEST_LOGIN_GUARD_MANUAL_LOGIN_WINDOW;
+      restore();
+      schedule();
+    }, true);
     const observer = runtime.createObserver(schedule);
     if (observer && document.documentElement) observer.observe(document.documentElement, { childList: true, subtree: true });
     runtime.listen(document, "playing", (event) => {
       const video = event.target;
-      if (video instanceof HTMLVideoElement) recentPlaying.set(video, Date.now());
+      rememberPlayback(video);
+    }, true);
+    runtime.listen(document, "timeupdate", (event) => {
+      rememberPlayback(event.target);
     }, true);
     runtime.listen(window, "popstate", schedule);
     runtime.listen(window, "hashchange", schedule);
@@ -5302,7 +5395,10 @@
       restore();
       dismissPrompt();
       style?.remove();
-      recentPlaying.clear();
+      playbackSnapshots.clear();
+      latestPlaybackSnapshot = null;
+      manualLoginActive = false;
+      resumePending = false;
       if (window.__BILIKIT_GUEST_LOGIN_GUARD__) delete window.__BILIKIT_GUEST_LOGIN_GUARD__;
     };
   }
